@@ -72,6 +72,7 @@ Ein Editor, der speziell für Entwickler gedacht ist: Fokus auf Code, Projektdok
 - Export: HTML/PDF mit Dev-Theme.
 - Snippets/Shortcodes (:::warning).
 - Gist-/GitHub-Integration.
+- **TODO: Umstieg auf macos_ui für native macOS Look & Feel**
 
 ---
 
