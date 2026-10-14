@@ -263,6 +263,22 @@ impl Workspace {
         state.save_tasks.insert(id, task);
     }
 
+    /// Alle offenen, geänderten Notizen sofort sichern (Beenden).
+    pub(crate) fn save_all_notes(&mut self, cx: &mut Context<Self>) {
+        let ids: Vec<String> = self
+            .panes
+            .iter()
+            .flat_map(|pane| pane.buffers.iter())
+            .filter(|b| b.dirty)
+            .filter_map(|b| b.note_id.clone())
+            .collect();
+        for id in ids {
+            if let Err(err) = self.save_note_now(&id, cx) {
+                eprintln!("Notiz {id} konnte nicht gespeichert werden: {err}");
+            }
+        }
+    }
+
     pub(crate) fn save_note(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Err(err) = self.save_note_now(id, cx) {
             window.push_notification(Notification::error(format!("Notiz konnte nicht gespeichert werden: {err}")), cx);

@@ -299,6 +299,16 @@ impl Workspace {
             cx.defer_in(window, move |this, window, cx| this.open_file(file, window, cx));
         }
         let notes = NotesState::open(window, cx);
+        // Ausstehende Notiz-Speicherungen nicht verlieren, wenn kurz nach dem Tippen beendet wird.
+        let quit_subscription = cx.on_app_quit(|this: &mut Self, cx| {
+            this.save_all_notes(cx);
+            async {}
+        });
+        // Fenster schließen = Beenden (mit Rückfrage bei ungesicherten Dateien).
+        window.on_window_should_close(cx, |window, cx| {
+            window.dispatch_action(Box::new(Quit), cx);
+            false
+        });
         cx.defer_in(window, |this, window, cx| this.after_start(window, cx));
 
         Self {
@@ -316,7 +326,7 @@ impl Workspace {
             new_doc: None,
             sidebar: SidebarMode::Files,
             notes,
-            _subscriptions: vec![tree_subscription],
+            _subscriptions: vec![tree_subscription, quit_subscription],
         }
     }
 
@@ -512,6 +522,72 @@ impl Workspace {
             }
         }
         cx.notify();
+    }
+
+    fn quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_all_notes(cx);
+        let dirty: Vec<String> = self
+            .panes
+            .iter()
+            .flat_map(|pane| pane.buffers.iter())
+            .filter(|b| b.dirty && b.note_id.is_none())
+            .map(|b| file_name(&b.path))
+            .collect();
+        if dirty.is_empty() {
+            cx.quit();
+            return;
+        }
+        let message = if dirty.len() == 1 {
+            format!("„{}“ hat ungesicherte Änderungen.", dirty[0])
+        } else {
+            format!("{} Dateien haben ungesicherte Änderungen.", dirty.len())
+        };
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &message,
+            Some("Sollen die Änderungen vor dem Beenden gesichert werden?"),
+            &["Sichern", "Nicht sichern", "Abbrechen"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(choice) = answer.await else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| match choice {
+                0 => {
+                    if this.save_all_files(window, cx) {
+                        cx.quit();
+                    }
+                }
+                1 => cx.quit(),
+                _ => {}
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Sichert alle geänderten Dateien; `false`, wenn eine nicht gespeichert werden konnte.
+    fn save_all_files(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let mut ok = true;
+        for buffer in self.panes.iter_mut().flat_map(|pane| pane.buffers.iter_mut()) {
+            if !buffer.dirty || buffer.note_id.is_some() {
+                continue;
+            }
+            let content = buffer.editor.read(cx).value();
+            match std::fs::write(&buffer.path, content.as_bytes()) {
+                Ok(()) => buffer.dirty = false,
+                Err(err) => {
+                    ok = false;
+                    window.push_notification(
+                        Notification::error(format!("„{}“ konnte nicht gespeichert werden: {err}", file_name(&buffer.path))),
+                        cx,
+                    );
+                }
+            }
+        }
+        cx.notify();
+        ok
     }
 
     fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -1371,6 +1447,7 @@ impl Render for Workspace {
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(Self::open))
             .on_action(cx.listener(Self::save))
+            .on_action(cx.listener(Self::quit))
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::toggle_split))
             .on_action(cx.listener(Self::toggle_help))
