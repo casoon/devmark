@@ -67,7 +67,7 @@ fn edits_propagate_both_ways() {
     s.b.save_content(&doc.id, "v2 von B").unwrap();
     s.sync_b();
     let report = s.sync_a();
-    assert_eq!(report.changed_documents, [doc.id.clone()]);
+    assert_eq!(report.changed_documents, std::slice::from_ref(&doc.id));
     assert_eq!(s.a.get(&doc.id).unwrap().unwrap().content, "v2 von B");
 }
 
