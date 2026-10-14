@@ -5,6 +5,7 @@
 //! (`kind`), Bücher enthalten Kapitel über `parent_id`.
 
 mod export;
+mod links;
 
 use std::path::Path;
 
@@ -13,6 +14,7 @@ use rusqlite::{OptionalExtension, Row, params};
 
 pub use devmark_storage::{BackupInfo, Result, create_backup, list_backups};
 pub use export::export_markdown;
+pub use links::{NoteLink, link_markup, note_links, strip_note_links};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -570,6 +572,19 @@ impl Notes {
         rows.collect()
     }
 
+    // ---- Verknüpfungen ----
+
+    /// Aktive Dokumente, die per `[[…|id]]` auf `id` verweisen.
+    pub fn backlinks(&self, id: &str) -> Result<Vec<Document>> {
+        let mut stmt = self.store.conn().prepare(&format!(
+            "SELECT {DOCUMENT_COLUMNS} FROM documents
+             WHERE deleted_at IS NULL AND id <> ?1 AND instr(content, '|' || ?1 || ']]') > 0
+             ORDER BY updated_at DESC"
+        ))?;
+        let rows = stmt.query_map(params![id], document_from_row)?;
+        rows.collect()
+    }
+
     // ---- Suche ----
 
     /// Volltextsuche über Titel und Inhalt (Wortanfänge, Umlaut-/Akzent-tolerant).
@@ -748,6 +763,20 @@ mod tests {
         assert_eq!(n.folders().unwrap().len(), 1);
         n.remove_tag(&doc.id, "wichtig").unwrap();
         assert!(n.tags_of(&doc.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn backlinks_follow_ids_not_titles() {
+        let mut n = notes();
+        let target = n.create_note("# Ziel").unwrap();
+        let source = n.create_note(&format!("Siehe {}", link_markup("Ziel", &target.id))).unwrap();
+        n.create_note("[[Ziel]] ohne ID zählt nicht").unwrap();
+        n.save_content(&target.id, "# Neuer Titel").unwrap();
+        let back = n.backlinks(&target.id).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].id, source.id);
+        n.trash(&source.id).unwrap();
+        assert!(n.backlinks(&target.id).unwrap().is_empty());
     }
 
     #[test]

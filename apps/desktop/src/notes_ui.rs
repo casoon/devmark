@@ -1,24 +1,30 @@
 //! Notes-Modus: Notizen aus der SQLite-Datenbank – sofort schreiben, Autosave, Suche,
-//! Favoriten, Papierkorb, Export und tägliches Backup.
+//! Favoriten, Ordner, Verknüpfungen, Papierkorb, Export und tägliches Backup.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
-use devmark_notes::{Document, Filter, Notes, Revision, create_backup, export_markdown, extract_hashtags, list_backups};
+use devmark_notes::{
+    Document, Filter, Folder, Format, Kind, Notes, Revision, create_backup, export_markdown, extract_hashtags,
+    list_backups,
+};
 use devmark_writing::authoring::Syntax;
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::{
-    ActiveTheme, Selectable, Sizable, WindowExt,
+    ActiveTheme, IconName, Selectable, Sizable, WindowExt,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
+    menu::{DropdownMenu as _, PopupMenuItem},
     notification::Notification,
     v_flex,
 };
 use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder as _;
 
+use crate::assist::NoteIndex;
 use crate::{
     BackupNow, ExportNotes, NewNote, SelectionToNote, ShowFiles, ShowHistory, ShowNotes, ToggleTrash,
     Workspace,
@@ -43,6 +49,7 @@ pub struct NoteRow {
     pub title: String,
     pub subtitle: String,
     pub favorite: bool,
+    pub folder_id: Option<String>,
 }
 
 pub struct NotesState {
@@ -57,6 +64,13 @@ pub struct NotesState {
     pub tag_filter: Option<String>,
     /// Versionsverlauf der Notiz, falls eingeblendet.
     pub history: Option<(String, Vec<Revision>)>,
+    /// Alle aktiven Notizen (id, Titel) für `[[…]]`-Verknüpfungen im Editor.
+    pub index: NoteIndex,
+    pub folders: Vec<Folder>,
+    /// Ausgewählter Ordner; `None` = alle Notizen. Neue Notizen landen darin.
+    pub folder_filter: Option<String>,
+    /// Ordner, der gerade umbenannt wird, mit Eingabefeld.
+    renaming: Option<(String, Entity<InputState>, Subscription)>,
     _search_subscription: Subscription,
 }
 
@@ -113,6 +127,10 @@ impl NotesState {
             tags: Vec::new(),
             tag_filter: None,
             history: None,
+            index: Rc::default(),
+            folders: Vec::new(),
+            folder_filter: None,
+            renaming: None,
             _search_subscription: subscription,
         })
     }
@@ -149,12 +167,19 @@ impl Workspace {
         let Some(state) = self.notes.as_mut() else {
             return;
         };
+        state.folders = state.notes.folders().unwrap_or_default();
+        if let Some(folder) = &state.folder_filter
+            && !state.folders.iter().any(|f| f.id == *folder)
+        {
+            state.folder_filter = None;
+        }
         let query = state.search.read(cx).value().trim().to_string();
         let rows = if !query.is_empty() && !state.show_trash {
             state.notes.search(&query, 200).map(|hits| {
                 hits.into_iter()
                     .map(|hit| NoteRow {
                         favorite: false,
+                        folder_id: state.notes.get(&hit.id).ok().flatten().and_then(|d| d.folder_id),
                         id: hit.id,
                         title: hit.title,
                         subtitle: hit.snippet.replace(['\n', '\r'], " "),
@@ -165,6 +190,7 @@ impl Workspace {
             let filter = Filter {
                 trash: state.show_trash,
                 tag: state.tag_filter.clone().filter(|_| !state.show_trash),
+                folder: state.folder_filter.clone().filter(|_| !state.show_trash).map(Some),
                 ..Default::default()
             };
             state.notes.list(&filter).map(|documents| {
@@ -176,11 +202,17 @@ impl Workspace {
                         title: d.display_title(),
                         subtitle: format!("{} · {}", relative_time(d.updated_at), preview_line(d)),
                         favorite: d.favorite,
+                        folder_id: d.folder_id.clone(),
                     })
                     .collect()
             })
         };
         state.rows = rows.unwrap_or_default();
+        *state.index.borrow_mut() = state
+            .notes
+            .list(&Filter::default())
+            .map(|documents| documents.iter().map(|d| (d.id.clone(), d.display_title())).collect())
+            .unwrap_or_default();
         state.tags = state.notes.tags().unwrap_or_default();
         if let Some(tag) = &state.tag_filter
             && !state.tags.iter().any(|(t, _)| t.eq_ignore_ascii_case(tag)) {
@@ -206,7 +238,8 @@ impl Workspace {
         let Some(state) = self.notes.as_mut() else {
             return;
         };
-        match state.notes.create_note(content) {
+        let folder = state.folder_filter.clone().filter(|_| !state.show_trash);
+        match state.notes.create(Kind::Note, Format::Markdown, "", content, folder.as_deref()) {
             Ok(document) => {
                 state.show_trash = false;
                 self.sidebar = SidebarMode::Notes;
@@ -533,6 +566,96 @@ impl Workspace {
         self.refresh_notes(cx);
     }
 
+    // ---- Ordner ----
+
+    fn select_folder(&mut self, folder: Option<String>, cx: &mut Context<Self>) {
+        if let Some(state) = self.notes.as_mut() {
+            state.folder_filter = folder;
+            state.show_trash = false;
+        }
+        self.refresh_notes(cx);
+    }
+
+    /// Neuer Ordner im ausgewählten Ordner (oder oberster Ebene), gleich zum Umbenennen offen.
+    fn new_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.notes.as_mut() else {
+            return;
+        };
+        match state.notes.create_folder("Neuer Ordner", state.folder_filter.as_deref()) {
+            Ok(folder) => {
+                state.folder_filter = Some(folder.id.clone());
+                self.refresh_notes(cx);
+                self.start_rename_folder(folder.id, window, cx);
+            }
+            Err(err) => window.push_notification(Notification::error(format!("Ordner konnte nicht angelegt werden: {err}")), cx),
+        }
+    }
+
+    fn start_rename_folder(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self
+            .notes
+            .as_ref()
+            .and_then(|s| s.folders.iter().find(|f| f.id == id))
+            .map(|f| f.name.clone())
+        else {
+            return;
+        };
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(name));
+        input.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.select_all(window, cx);
+        });
+        let subscription = cx.subscribe_in(&input, window, |this: &mut Workspace, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                this.finish_rename_folder(cx);
+            }
+        });
+        if let Some(state) = self.notes.as_mut() {
+            state.renaming = Some((id, input, subscription));
+        }
+        cx.notify();
+    }
+
+    fn finish_rename_folder(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = self.notes.as_mut() else {
+            return;
+        };
+        let Some((id, input, _)) = state.renaming.take() else {
+            return;
+        };
+        let name = input.read(cx).value().trim().to_string();
+        if !name.is_empty() {
+            state.notes.rename_folder(&id, &name).ok();
+        }
+        self.refresh_notes(cx);
+    }
+
+    /// Ordner löschen; Notizen und Unterordner rücken eine Ebene nach oben.
+    fn delete_folder(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.notes.as_mut() else {
+            return;
+        };
+        let parent = state.folders.iter().find(|f| f.id == id).and_then(|f| f.parent_id.clone());
+        match state.notes.delete_folder(id) {
+            Ok(_) => {
+                state.folder_filter = parent;
+                window.push_notification(
+                    Notification::info("Ordner gelöscht – Notizen und Unterordner liegen jetzt eine Ebene höher."),
+                    cx,
+                );
+            }
+            Err(err) => window.push_notification(Notification::error(format!("Ordner konnte nicht gelöscht werden: {err}")), cx),
+        }
+        self.refresh_notes(cx);
+    }
+
+    fn move_note(&mut self, id: &str, folder: Option<&str>, cx: &mut Context<Self>) {
+        if let Some(state) = self.notes.as_mut() {
+            state.notes.move_to_folder(id, folder).ok();
+        }
+        self.refresh_notes(cx);
+    }
+
     // ---- Darstellung ----
 
     pub(crate) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -580,12 +703,23 @@ impl Workspace {
                 .into_any_element();
         };
         let active_note = self.active_buffer().and_then(|b| b.note_id.clone());
+        let tree = folder_tree(&state.folders);
+        // Ziele für „In Ordner verschieben“ (eingerückt wie der Baum).
+        let move_targets: Rc<Vec<(Option<String>, String)>> = Rc::new(if tree.is_empty() {
+            Vec::new()
+        } else {
+            std::iter::once((None, "Kein Ordner".to_string()))
+                .chain(tree.iter().map(|(depth, f)| (Some(f.id.clone()), format!("{}{}", "   ".repeat(*depth), f.name))))
+                .collect()
+        });
         let mut list = v_flex().id("notes-list").flex_1().min_h_0().overflow_y_scroll().p_1().gap_0p5();
         if state.rows.is_empty() {
             let hint = if state.show_trash {
                 "Der Papierkorb ist leer."
             } else if !state.search.read(cx).value().trim().is_empty() {
                 "Nichts gefunden."
+            } else if state.folder_filter.is_some() {
+                "Dieser Ordner ist leer. „Neu“ legt hier eine Notiz an."
             } else {
                 "Noch keine Notizen. „Neu“ oder Cmd-Shift-N legt eine an."
             };
@@ -621,6 +755,33 @@ impl Workspace {
             } else {
                 h_flex()
                     .gap_0p5()
+                    .when(!move_targets.is_empty(), |this| {
+                        let workspace = cx.entity().downgrade();
+                        let targets = move_targets.clone();
+                        let (id, current) = (id.clone(), row.folder_id.clone());
+                        this.child(
+                            Button::new(("move", ix))
+                                .ghost()
+                                .xsmall()
+                                .icon(AssetIcon::FolderInput)
+                                .tooltip("In Ordner verschieben")
+                                .dropdown_menu(move |mut menu, _, _| {
+                                    for (folder, label) in targets.iter() {
+                                        let (workspace, id, folder) = (workspace.clone(), id.clone(), folder.clone());
+                                        menu = menu.item(
+                                            PopupMenuItem::new(label.clone()).checked(folder == current).on_click(
+                                                move |_, _, cx| {
+                                                    workspace
+                                                        .update(cx, |this, cx| this.move_note(&id, folder.as_deref(), cx))
+                                                        .ok();
+                                                },
+                                            ),
+                                        );
+                                    }
+                                    menu
+                                }),
+                        )
+                    })
                     .child(
                         Button::new(("favorite", ix))
                             .ghost()
@@ -734,18 +895,179 @@ impl Workspace {
                             );
                         }
                         this.child(chips)
-                    }),
+                    })
+                    .when(!state.show_trash, |this| this.child(self.render_folders(state, &tree, cx))),
             )
             .child(list)
+            .when_some(active_note.filter(|_| !state.show_trash), |this, note| {
+                this.children(self.render_backlinks(state, &note, cx))
+            })
             .into_any_element()
     }
+
+    fn render_folders(&self, state: &NotesState, tree: &[(usize, &Folder)], cx: &mut Context<Self>) -> impl IntoElement {
+        let row = |id: ElementId, depth: usize, selected: bool, cx: &mut Context<Self>| {
+            h_flex()
+                .id(id)
+                .role(Role::ListItem)
+                .aria_selected(selected)
+                .w_full()
+                .gap_1p5()
+                .pl(px(8. + 14. * depth as f32))
+                .pr_1()
+                .py_0p5()
+                .min_h(px(26.))
+                .rounded(cx.theme().radius)
+                .cursor_pointer()
+                .text_sm()
+                .bg(if selected { cx.theme().accent } else { cx.theme().transparent })
+                .hover(|this| this.bg(cx.theme().accent))
+        };
+        let mut folders = v_flex()
+            .gap_0p5()
+            .child(
+                h_flex()
+                    .justify_between()
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Ordner"))
+                    .child(
+                        Button::new("new-folder")
+                            .ghost()
+                            .xsmall()
+                            .icon(AssetIcon::FolderPlus)
+                            .tooltip(if state.folder_filter.is_some() {
+                                "Neuer Unterordner im ausgewählten Ordner"
+                            } else {
+                                "Neuer Ordner"
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| this.new_folder(window, cx))),
+                    ),
+            )
+            .child(
+                row("folder-all".into(), 0, state.folder_filter.is_none(), cx)
+                    .child(IconName::Inbox)
+                    .child("Alle Notizen")
+                    .on_click(cx.listener(|this, _, _, cx| this.select_folder(None, cx))),
+            );
+        for (ix, (depth, folder)) in tree.iter().enumerate() {
+            let selected = state.folder_filter.as_deref() == Some(folder.id.as_str());
+            let renaming = state.renaming.as_ref().filter(|(id, _, _)| *id == folder.id);
+            let id = folder.id.clone();
+            let mut item = row(("folder", ix).into(), *depth, selected, cx)
+                .child(if selected { IconName::FolderOpen } else { IconName::Folder });
+            item = match renaming {
+                Some((_, input, _)) => item.child(div().flex_1().child(Input::new(input).xsmall())),
+                None => item
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(folder.name.clone()),
+                    )
+                    .when(selected, |this| {
+                        this.child(
+                            Button::new(("rename-folder", ix))
+                                .ghost()
+                                .xsmall()
+                                .icon(AssetIcon::Pencil)
+                                .tooltip("Umbenennen")
+                                .on_click(cx.listener({
+                                    let id = id.clone();
+                                    move |this, _, window, cx| this.start_rename_folder(id.clone(), window, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new(("delete-folder", ix))
+                                .ghost()
+                                .xsmall()
+                                .icon(AssetIcon::Trash)
+                                .tooltip("Ordner löschen (Notizen bleiben erhalten)")
+                                .on_click(cx.listener({
+                                    let id = id.clone();
+                                    move |this, _, window, cx| {
+                                        // Sonst wählt der Klick danach die Zeile des gelöschten Ordners.
+                                        cx.stop_propagation();
+                                        this.delete_folder(&id, window, cx)
+                                    }
+                                })),
+                        )
+                    }),
+            };
+            folders = folders.child(item.on_click(cx.listener(move |this, _, _, cx| this.select_folder(Some(id.clone()), cx))));
+        }
+        folders
+    }
+
+    /// Notizen, die auf die aktive Notiz verweisen.
+    fn render_backlinks(&self, state: &NotesState, note: &str, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let backlinks = state.notes.backlinks(note).ok().filter(|b| !b.is_empty())?;
+        let mut section = v_flex()
+            .id("backlinks")
+            .max_h(px(180.))
+            .overflow_y_scroll()
+            .p_2()
+            .gap_0p5()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Verweise auf diese Notiz"));
+        for (ix, document) in backlinks.iter().enumerate() {
+            let id = document.id.clone();
+            section = section.child(
+                h_flex()
+                    .id(("backlink", ix))
+                    .gap_1p5()
+                    .px_2()
+                    .py_0p5()
+                    .rounded(cx.theme().radius)
+                    .cursor_pointer()
+                    .text_sm()
+                    .hover(|this| this.bg(cx.theme().accent))
+                    .child(IconName::ArrowLeft)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(document.display_title()),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| this.open_note(id.clone(), window, cx))),
+            );
+        }
+        Some(section)
+    }
+}
+
+/// Ordner als Baum in Anzeigereihenfolge: (Tiefe, Ordner). Verwaiste Ordner (Eltern gelöscht,
+/// z. B. nach Sync) erscheinen auf oberster Ebene.
+fn folder_tree(folders: &[Folder]) -> Vec<(usize, &Folder)> {
+    fn add<'a>(folders: &'a [Folder], parent: Option<&str>, depth: usize, out: &mut Vec<(usize, &'a Folder)>) {
+        for folder in folders.iter().filter(|f| f.parent_id.as_deref() == parent) {
+            if out.iter().any(|(_, f)| f.id == folder.id) {
+                continue;
+            }
+            out.push((depth, folder));
+            add(folders, Some(&folder.id), depth + 1, out);
+        }
+    }
+    let mut out = Vec::new();
+    add(folders, None, 0, &mut out);
+    for folder in folders {
+        if !out.iter().any(|(_, f)| f.id == folder.id) {
+            out.push((0, folder));
+            add(folders, Some(&folder.id), 1, &mut out);
+        }
+    }
+    out
 }
 
 /// Erste Inhaltszeile nach dem Titel als Vorschau.
 fn preview_line(document: &Document) -> String {
     let title = document.display_title();
-    document
-        .content
+    devmark_notes::strip_note_links(&document.content)
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && *l != "---")
@@ -775,4 +1097,20 @@ fn devmark_storage_now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Folder, folder_tree};
+
+    fn folder(id: &str, parent: Option<&str>) -> Folder {
+        Folder { id: id.into(), parent_id: parent.map(Into::into), name: id.into() }
+    }
+
+    #[test]
+    fn folder_tree_nests_and_keeps_orphans() {
+        let folders = [folder("a", None), folder("b", None), folder("a1", Some("a")), folder("x", Some("weg"))];
+        let tree: Vec<(usize, &str)> = folder_tree(&folders).into_iter().map(|(d, f)| (d, f.id.as_str())).collect();
+        assert_eq!(tree, [(0, "a"), (1, "a1"), (0, "b"), (0, "x")]);
+    }
 }

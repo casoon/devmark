@@ -119,6 +119,9 @@ icon_assets!(
         FileType,
         Trash,
         RotateCcwClock,
+        FolderPlus,
+        FolderInput,
+        Pencil,
     ]
 );
 
@@ -447,6 +450,9 @@ impl Workspace {
         let language = language_for(&path);
         let syntax = Syntax::for_path(&path);
 
+        // `[[…]]`-Verknüpfungen in Markdown, sofern Notizen verfügbar sind.
+        let note_index = self.notes.as_ref().map(|s| s.index.clone()).filter(|_| syntax == Some(Syntax::Markdown));
+        let workspace = cx.entity().downgrade();
         let mut buffer_assist = None;
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
@@ -462,10 +468,24 @@ impl Workspace {
                 .soft_wrap(syntax.is_some());
             state.set_value(content, window, cx);
             if let Some(syntax) = syntax {
-                let assist = Rc::new(WritingAssist { syntax, offered: Default::default() });
+                let links = note_index.is_some();
+                let assist = Rc::new(WritingAssist { syntax, notes: note_index, offered: Default::default() });
                 buffer_assist = Some(assist.clone());
                 state.lsp_mut().completion_provider = Some(assist.clone());
-                state.lsp_mut().hover_provider = Some(assist);
+                state.lsp_mut().hover_provider = Some(assist.clone());
+                if links {
+                    state.lsp_mut().definition_provider = Some(assist);
+                    state.lsp_mut().show_document = Some(Rc::new(move |params, window, cx| {
+                        let Some(id) = assist::note_id_from_uri(&params.uri) else {
+                            return false;
+                        };
+                        let (id, workspace) = (id.to_string(), workspace.clone());
+                        window.defer(cx, move |window, cx| {
+                            workspace.update(cx, |this, cx| this.open_note(id, window, cx)).ok();
+                        });
+                        true
+                    }));
+                }
             }
             state
         });
@@ -660,7 +680,10 @@ impl Workspace {
         let Some(syntax) = buffer.syntax else {
             return;
         };
-        let source = buffer.editor.read(cx).value().to_string();
+        let mut source = buffer.editor.read(cx).value().to_string();
+        if buffer.note_id.is_some() {
+            source = devmark_notes::strip_note_links(&source);
+        }
         let path = buffer.path.clone();
         self.preview_task = cx.spawn(async move |this, cx| {
             if !delay.is_zero() {
