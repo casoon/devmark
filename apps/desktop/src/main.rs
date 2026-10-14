@@ -3,6 +3,7 @@
 
 mod assist;
 mod notes_ui;
+mod sync_ui;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -28,9 +29,11 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::*;
+use gpui_kit::prelude::FluentBuilder as _;
 
 use crate::assist::WritingAssist;
 use crate::notes_ui::{NotesState, SidebarMode};
+use crate::sync_ui::SyncSettings;
 
 actions!(
     devmark,
@@ -53,6 +56,9 @@ actions!(
         ShowNotes,
         ToggleTrash,
         ShowHistory,
+        SyncNow,
+        ChooseSyncFolder,
+        DisableSync,
         FormatBold,
         FormatItalic,
         FormatStrike,
@@ -260,6 +266,8 @@ struct Workspace {
     new_doc: Option<NewDocForm>,
     sidebar: SidebarMode,
     notes: Option<NotesState>,
+    sync: SyncSettings,
+    sync_timer: Task<()>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -326,6 +334,8 @@ impl Workspace {
             new_doc: None,
             sidebar: SidebarMode::Files,
             notes,
+            sync: SyncSettings::load(),
+            sync_timer: Task::ready(()),
             _subscriptions: vec![tree_subscription, quit_subscription],
         }
     }
@@ -1460,6 +1470,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::show_notes))
             .on_action(cx.listener(Self::toggle_trash))
             .on_action(cx.listener(Self::show_history))
+            .on_action(cx.listener(Self::sync_now))
+            .on_action(cx.listener(Self::choose_sync_folder))
+            .on_action(cx.listener(Self::disable_sync))
             .on_action(cx.listener(Self::new_document))
             .on_action(cx.listener(Self::export_typst))
             .on_action(cx.listener(Self::export_pdf));
@@ -1503,6 +1516,28 @@ impl Render for Workspace {
             StatusBar::new().left(status).right(
                 h_flex()
                     .gap_1()
+                    .when(self.sync.folder.is_some(), |this| {
+                        let label = if self.sync.running {
+                            "Sync …".to_string()
+                        } else if self.sync.last_error.is_some() {
+                            "Sync ⚠".to_string()
+                        } else {
+                            "Sync".to_string()
+                        };
+                        let tooltip = match (&self.sync.last_error, self.sync.last_sync) {
+                            (Some(err), _) => format!("Letzter Sync fehlgeschlagen: {err}"),
+                            (None, Some(at)) => format!("Zuletzt synchronisiert {}", date_time_from_ms(at)),
+                            (None, None) => "Noch nicht synchronisiert".to_string(),
+                        };
+                        this.child(
+                            Button::new("sync-status")
+                                .ghost()
+                                .xsmall()
+                                .label(label)
+                                .tooltip(tooltip)
+                                .on_click(cx.listener(|this, _, window, cx| this.sync_now(&SyncNow, window, cx))),
+                        )
+                    })
                     .child(
                         Button::new("new-doc")
                             .ghost()
@@ -1578,6 +1613,12 @@ fn today() -> String {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     iso_date(ms)
+}
+
+/// Zeitpunkt (UTC) als `14.10.2026, 20:15 UTC`.
+fn date_time_from_ms(ms: i64) -> String {
+    let secs = ms.div_euclid(1000).rem_euclid(86_400);
+    format!("{}, {:02}:{:02} UTC", date_from_ms(ms), secs / 3600, secs % 3600 / 60)
 }
 
 /// Datum (UTC) als `14.10.2026`.
@@ -1746,6 +1787,10 @@ fn main() {
                 MenuItem::separator(),
                 MenuItem::action("Alle Notizen exportieren …", ExportNotes),
                 MenuItem::action("Backup jetzt erstellen", BackupNow),
+                MenuItem::separator(),
+                MenuItem::action("Jetzt synchronisieren", SyncNow),
+                MenuItem::action("Sync-Ordner wählen …", ChooseSyncFolder),
+                MenuItem::action("Synchronisierung ausschalten", DisableSync),
             ]),
             Menu::new("Ansicht").items([
                 MenuItem::action("Dateien", ShowFiles),

@@ -142,6 +142,7 @@ impl Workspace {
                 );
             }
         self.refresh_notes(cx);
+        self.start_sync_timer(window, cx);
     }
 
     pub(crate) fn refresh_notes(&mut self, cx: &mut Context<Self>) {

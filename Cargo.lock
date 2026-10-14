@@ -1491,6 +1491,8 @@ dependencies = [
  "anyhow",
  "codebook-tree-sitter-typst",
  "devmark-notes",
+ "devmark-storage",
+ "devmark-sync",
  "devmark-writing",
  "futures",
  "gpui-kit",
