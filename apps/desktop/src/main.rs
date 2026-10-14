@@ -51,6 +51,7 @@ actions!(
         ShowFiles,
         ShowNotes,
         ToggleTrash,
+        ShowHistory,
         FormatBold,
         FormatItalic,
         FormatStrike,
@@ -107,6 +108,7 @@ icon_assets!(
         Printer,
         FileType,
         Trash,
+        RotateCcwClock,
     ]
 );
 
@@ -287,6 +289,20 @@ impl Workspace {
             .ok();
         })
         .detach();
+    }
+
+    /// Ordner wird Wurzel, Datei wird geöffnet (bei Datei außerhalb der Wurzel: deren Ordner).
+    fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if path.is_dir() {
+            self.set_root(path, window, cx);
+            return;
+        }
+        if !path.starts_with(&self.root)
+            && let Some(parent) = path.parent() {
+                self.set_root(parent.to_path_buf(), window, cx);
+            }
+        self.sidebar = SidebarMode::Files;
+        self.open_file(path, window, cx);
     }
 
     fn set_root(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -888,6 +904,19 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, window, cx| this.export_typst(&ExportTypst, window, cx))),
             );
         }
+        if self.active_buffer().is_some_and(|b| b.note_id.is_some()) {
+            let open = self.notes.as_ref().is_some_and(|n| n.history.is_some());
+            bar = bar.child(
+                Button::new("history")
+                    .ghost()
+                    .xsmall()
+                    .icon(AssetIcon::RotateCcwClock)
+                    .label("Verlauf")
+                    .selected(open)
+                    .tooltip_with_action("Frühere Stände dieser Notiz", &ShowHistory, None)
+                    .on_click(cx.listener(|this, _, window, cx| this.show_history(&ShowHistory, window, cx))),
+            );
+        }
         bar.child(
             Button::new("preview")
                 .ghost()
@@ -1239,9 +1268,13 @@ impl Render for Workspace {
         };
 
         let active_syntax = self.active_buffer().and_then(|b| b.syntax).filter(|_| self.new_doc.is_none());
+        let history = self.render_history(cx);
         let main = match active_syntax {
-            Some(syntax) if self.show_help || self.show_preview => {
+            Some(syntax) if self.show_help || self.show_preview || history.is_some() => {
                 let mut group = h_resizable("writing-split").child(resizable_panel().child(editors));
+                if let Some(history) = history {
+                    group = group.child(resizable_panel().size(px(300.)).child(history));
+                }
                 if self.show_preview {
                     group = group.child(resizable_panel().size(px(460.)).child(self.render_preview(cx)));
                 }
@@ -1286,6 +1319,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::show_files))
             .on_action(cx.listener(Self::show_notes))
             .on_action(cx.listener(Self::toggle_trash))
+            .on_action(cx.listener(Self::show_history))
             .on_action(cx.listener(Self::new_document))
             .on_action(cx.listener(Self::export_typst))
             .on_action(cx.listener(Self::export_pdf));
@@ -1477,7 +1511,13 @@ fn main() {
         (arg, None)
     };
 
-    gpui_kit::application().with_assets(AppAssets).run(move |cx| {
+    // Finder „Öffnen mit …“ / Doppelklick: Pfade kommen als file://-URLs, auch beim Start.
+    let (open_tx, mut open_rx) = futures::channel::mpsc::unbounded::<Vec<String>>();
+    let app = gpui_kit::application().with_assets(AppAssets);
+    app.on_open_urls(move |urls| {
+        open_tx.unbounded_send(urls).ok();
+    });
+    app.run(move |cx| {
         gpui_kit::init(cx);
         register_typst_language();
         cx.bind_keys([
@@ -1554,6 +1594,7 @@ fn main() {
                 MenuItem::action("Auswahl als Notiz", SelectionToNote),
                 MenuItem::action("Notizen durchsuchen", ShowNotes),
                 MenuItem::action("Papierkorb", ToggleTrash),
+                MenuItem::action("Versionsverlauf", ShowHistory),
                 MenuItem::separator(),
                 MenuItem::action("Alle Notizen exportieren …", ExportNotes),
                 MenuItem::action("Backup jetzt erstellen", BackupNow),
@@ -1571,7 +1612,7 @@ fn main() {
 
         let title = window_title(&root);
         let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
-        gpui_kit::open_window(
+        let (window, workspace) = gpui_kit::open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
@@ -1584,7 +1625,41 @@ fn main() {
             |window, cx| cx.new(|cx| Workspace::new(root, file, window, cx)),
         )
         .expect("open window");
+
+        cx.spawn(async move |cx| {
+            use futures::StreamExt as _;
+            while let Some(urls) = open_rx.next().await {
+                for path in urls.iter().filter_map(|url| path_from_file_url(url)) {
+                    window
+                        .update(cx, |_, window, cx| {
+                            window.activate_window();
+                            workspace.update(cx, |workspace, cx| workspace.open_path(path, window, cx));
+                        })
+                        .ok();
+                }
+            }
+        })
+        .detach();
     });
+}
+
+/// `file:///Users/x/Notiz%20A.md` → Pfad.
+fn path_from_file_url(url: &str) -> Option<PathBuf> {
+    let encoded = url.strip_prefix("file://")?;
+    let bytes = encoded.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len()
+            && let Ok(byte) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?, 16) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).ok().map(PathBuf::from)
 }
 
 /// Startordner ohne Argument: aktuelles Verzeichnis, außer es ist `/` (Start aus dem Finder).
@@ -1601,6 +1676,15 @@ fn default_root() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn file_urls() {
+        assert_eq!(
+            super::path_from_file_url("file:///Users/a/Notiz%20%C3%A4.md"),
+            Some(std::path::PathBuf::from("/Users/a/Notiz ä.md"))
+        );
+        assert_eq!(super::path_from_file_url("https://x"), None);
+    }
+
     #[test]
     fn typst_highlight_query_matches_grammar() {
         let language: tree_sitter::Language = codebook_tree_sitter_typst::LANGUAGE.into();

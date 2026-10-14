@@ -527,6 +527,22 @@ impl Notes {
         Ok(changed > 0)
     }
 
+    /// Setzt die Tags eines Dokuments genau auf `names` (fehlende werden entfernt).
+    pub fn set_tags(&mut self, document_id: &str, names: &[String]) -> Result<()> {
+        let current = self.tags_of(document_id)?;
+        for tag in &current {
+            if !names.iter().any(|n| n.eq_ignore_ascii_case(tag)) {
+                self.remove_tag(document_id, tag)?;
+            }
+        }
+        for name in names {
+            if !current.iter().any(|t| t.eq_ignore_ascii_case(name)) {
+                self.add_tag(document_id, name)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn tags_of(&self, document_id: &str) -> Result<Vec<String>> {
         let mut stmt = self.store.conn().prepare(
             "SELECT t.name FROM document_tags dt JOIN tags t ON t.id = dt.tag_id
@@ -568,6 +584,54 @@ impl Notes {
         })?;
         rows.collect()
     }
+}
+
+/// `#tags` im Markdown-Text (wie in Apple Notes/Obsidian). Überschriften (`# Titel`),
+/// Code, Links-Anker und Farben wie `#fff` zählen nicht.
+pub fn extract_hashtags(markdown: &str) -> Vec<String> {
+    let mut tags: Vec<String> = Vec::new();
+    let mut in_fence = false;
+    for line in markdown.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let chars: Vec<char> = line.chars().collect();
+        let mut in_code = false;
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if c == '`' {
+                in_code = !in_code;
+            } else if c == '#' && !in_code {
+                let boundary = i == 0 || chars[i - 1].is_whitespace() || matches!(chars[i - 1], '(' | ',');
+                let start = i + 1;
+                let mut end = start;
+                while end < chars.len() && (chars[end].is_alphanumeric() || matches!(chars[end], '-' | '_' | '/')) {
+                    end += 1;
+                }
+                let tag: String = chars[start..end].iter().collect();
+                let tag = tag.trim_end_matches(['-', '_', '/']).to_string();
+                let is_hex_color = (tag.len() == 3 || tag.len() == 6) && tag.chars().all(|c| c.is_ascii_hexdigit());
+                if boundary
+                    && !tag.is_empty()
+                    && tag.chars().next().is_some_and(char::is_alphabetic)
+                    && !is_hex_color
+                    && !tags.iter().any(|t| t.eq_ignore_ascii_case(&tag))
+                {
+                    tags.push(tag);
+                }
+                i = end;
+                continue;
+            }
+            i += 1;
+        }
+    }
+    tags
 }
 
 /// Nutzereingabe → FTS5-Abfrage: jedes Wort als Präfix, alle Wörter müssen vorkommen.
@@ -689,6 +753,21 @@ mod tests {
         // FTS-Sonderzeichen in der Eingabe dürfen keinen Syntaxfehler auslösen.
         assert!(n.search("\"\"* OR ( NEAR", 10).is_ok());
         assert!(n.search("", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn hashtags() {
+        let text = "# Überschrift\nText #projekt und #Größe, nicht a#b oder `#code`\n#start (#klammer) #fff #2026 #projekt\n```\n#nein\n```";
+        assert_eq!(extract_hashtags(text), ["projekt", "Größe", "start", "klammer"]);
+    }
+
+    #[test]
+    fn set_tags_replaces() {
+        let mut n = notes();
+        let doc = n.create_note("x").unwrap();
+        n.set_tags(&doc.id, &["a".into(), "b".into()]).unwrap();
+        n.set_tags(&doc.id, &["B".into(), "c".into()]).unwrap();
+        assert_eq!(n.tags_of(&doc.id).unwrap(), ["b", "c"]);
     }
 
     #[test]

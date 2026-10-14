@@ -1492,6 +1492,7 @@ dependencies = [
  "codebook-tree-sitter-typst",
  "devmark-notes",
  "devmark-writing",
+ "futures",
  "gpui-kit",
  "lsp-types",
  "tree-sitter",

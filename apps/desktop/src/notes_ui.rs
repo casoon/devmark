@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use devmark_notes::{Document, Filter, Notes, create_backup, export_markdown, list_backups};
+use devmark_notes::{Document, Filter, Notes, Revision, create_backup, export_markdown, extract_hashtags, list_backups};
+use devmark_writing::authoring::Syntax;
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::{
     ActiveTheme, Selectable, Sizable, WindowExt,
@@ -19,7 +20,8 @@ use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder as _;
 
 use crate::{
-    BackupNow, ExportNotes, NewNote, SelectionToNote, ShowFiles, ShowNotes, ToggleTrash, Workspace,
+    BackupNow, ExportNotes, NewNote, SelectionToNote, ShowFiles, ShowHistory, ShowNotes, ToggleTrash,
+    Workspace,
 };
 
 /// Wie lange nach der letzten Eingabe gespeichert wird.
@@ -50,6 +52,11 @@ pub struct NotesState {
     pub rows: Vec<NoteRow>,
     pub show_trash: bool,
     pub save_tasks: HashMap<String, Task<()>>,
+    /// Alle Tags mit Anzahl; `tag_filter` schränkt die Liste ein.
+    pub tags: Vec<(String, usize)>,
+    pub tag_filter: Option<String>,
+    /// Versionsverlauf der Notiz, falls eingeblendet.
+    pub history: Option<(String, Vec<Revision>)>,
     _search_subscription: Subscription,
 }
 
@@ -103,6 +110,9 @@ impl NotesState {
             rows: Vec::new(),
             show_trash: false,
             save_tasks: HashMap::new(),
+            tags: Vec::new(),
+            tag_filter: None,
+            history: None,
             _search_subscription: subscription,
         })
     }
@@ -151,7 +161,11 @@ impl Workspace {
                     .collect()
             })
         } else {
-            let filter = Filter { trash: state.show_trash, ..Default::default() };
+            let filter = Filter {
+                trash: state.show_trash,
+                tag: state.tag_filter.clone().filter(|_| !state.show_trash),
+                ..Default::default()
+            };
             state.notes.list(&filter).map(|documents| {
                 documents
                     .iter()
@@ -166,6 +180,15 @@ impl Workspace {
             })
         };
         state.rows = rows.unwrap_or_default();
+        state.tags = state.notes.tags().unwrap_or_default();
+        if let Some(tag) = &state.tag_filter
+            && !state.tags.iter().any(|(t, _)| t.eq_ignore_ascii_case(tag)) {
+                state.tag_filter = None;
+            }
+        if let Some((id, _)) = &state.history {
+            let id = id.clone();
+            state.history = Some((id.clone(), state.notes.revisions(&id).unwrap_or_default()));
+        }
         cx.notify();
     }
 
@@ -256,11 +279,16 @@ impl Workspace {
             return Ok(());
         };
         let content = buffer.editor.read(cx).value().to_string();
+        let markdown = buffer.syntax == Some(Syntax::Markdown);
         let Some(state) = self.notes.as_mut() else {
             return Ok(());
         };
         state.save_tasks.remove(id);
         state.notes.save_content(id, &content)?;
+        if markdown {
+            // `#tag` im Text wird zum Tag (wie in Apple Notes).
+            state.notes.set_tags(id, &extract_hashtags(&content))?;
+        }
         let title = devmark_notes::display_title("", &content);
         for buffer in self.panes.iter_mut().flat_map(|pane| pane.buffers.iter_mut()) {
             if buffer.note_id.as_deref() == Some(id) {
@@ -376,6 +404,116 @@ impl Workspace {
             }
             Err(err) => window.push_notification(Notification::error(format!("Backup fehlgeschlagen: {err}")), cx),
         }
+    }
+
+    pub(crate) fn show_history(&mut self, _: &ShowHistory, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.active_buffer().and_then(|b| b.note_id.clone()) else {
+            window.push_notification(Notification::info("Versionsverlauf gibt es für Notizen."), cx);
+            return;
+        };
+        self.save_note(&id, window, cx);
+        let Some(state) = self.notes.as_mut() else {
+            return;
+        };
+        if state.history.as_ref().is_some_and(|(open, _)| *open == id) {
+            state.history = None;
+        } else {
+            let revisions = state.notes.revisions(&id).unwrap_or_default();
+            state.history = Some((id, revisions));
+        }
+        cx.notify();
+    }
+
+    fn restore_revision(&mut self, revision_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.notes.as_mut() else {
+            return;
+        };
+        let Some((note_id, _)) = state.history.clone() else {
+            return;
+        };
+        if let Err(err) = state.notes.restore_revision(revision_id) {
+            window.push_notification(Notification::error(format!("Wiederherstellen fehlgeschlagen: {err}")), cx);
+            return;
+        }
+        let Some(document) = state.notes.get(&note_id).ok().flatten() else {
+            return;
+        };
+        for buffer in self.panes.iter().flat_map(|pane| pane.buffers.iter()) {
+            if buffer.note_id.as_deref() == Some(note_id.as_str()) {
+                buffer.editor.update(cx, |editor, cx| editor.set_value(document.content.clone(), window, cx));
+            }
+        }
+        // set_value meldet eine Änderung → Autosave speichert denselben Stand (no-op).
+        window.push_notification(Notification::success("Früherer Stand wiederhergestellt; der vorige liegt im Verlauf."), cx);
+        self.refresh_notes(cx);
+    }
+
+    /// Verlaufs-Panel für die aktive Notiz (falls eingeblendet).
+    pub(crate) fn render_history(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = self.notes.as_ref()?;
+        let (note_id, revisions) = state.history.as_ref()?;
+        if self.active_buffer().and_then(|b| b.note_id.as_deref()) != Some(note_id.as_str()) {
+            return None;
+        }
+        let mut list = v_flex()
+            .id("history-panel")
+            .size_full()
+            .overflow_y_scroll()
+            .p_3()
+            .gap_2()
+            .bg(cx.theme().sidebar)
+            .text_sm()
+            .child(div().font_weight(FontWeight::BOLD).child("Versionsverlauf"))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Beim Schreiben wird höchstens alle 10 Minuten ein Stand gesichert, außerdem vor dem Löschen und Wiederherstellen."),
+            );
+        if revisions.is_empty() {
+            list = list.child(div().text_color(cx.theme().muted_foreground).child("Noch keine früheren Stände."));
+        }
+        for (ix, revision) in revisions.iter().enumerate() {
+            let id = revision.id.clone();
+            let preview: String = revision.content.chars().take(160).collect();
+            list = list.child(
+                v_flex()
+                    .gap_1()
+                    .p_2()
+                    .rounded(cx.theme().radius)
+                    .bg(cx.theme().background)
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(relative_time(revision.created_at)))
+                            .child(
+                                Button::new(("restore-revision", ix))
+                                    .xsmall()
+                                    .outline()
+                                    .label("Wiederherstellen")
+                                    .on_click(cx.listener(move |this, _, window, cx| this.restore_revision(&id, window, cx))),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .child(preview.replace('\n', " ⏎ ")),
+                    ),
+            );
+        }
+        Some(list.into_any_element())
+    }
+
+    fn toggle_tag_filter(&mut self, tag: &str, cx: &mut Context<Self>) {
+        if let Some(state) = self.notes.as_mut() {
+            state.tag_filter = match &state.tag_filter {
+                Some(current) if current.eq_ignore_ascii_case(tag) => None,
+                _ => Some(tag.to_string()),
+            };
+        }
+        self.refresh_notes(cx);
     }
 
     // ---- Darstellung ----
@@ -562,7 +700,24 @@ impl Workspace {
                                     .tooltip_with_action("Papierkorb anzeigen", &ToggleTrash, None)
                                     .on_click(cx.listener(|this, _, window, cx| this.toggle_trash(&ToggleTrash, window, cx))),
                             ),
-                    ),
+                    )
+                    .when(!state.tags.is_empty() && !state.show_trash, |this| {
+                        let mut chips = h_flex().flex_wrap().gap_1();
+                        for (ix, (tag, count)) in state.tags.iter().enumerate() {
+                            let selected = state.tag_filter.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(tag));
+                            let tag = tag.clone();
+                            chips = chips.child(
+                                Button::new(("tag", ix))
+                                    .xsmall()
+                                    .ghost()
+                                    .selected(selected)
+                                    .label(format!("#{tag} {count}"))
+                                    .tooltip("Nach Tag filtern (nochmals klicken: alle)")
+                                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_tag_filter(&tag, cx))),
+                            );
+                        }
+                        this.child(chips)
+                    }),
             )
             .child(list)
             .into_any_element()
