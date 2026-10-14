@@ -2,7 +2,7 @@
 
 Universeller Editor für Code, Notizen und längere Texte – Rust + [GPUI](https://www.gpui.rs) über [gpui-kit](https://github.com/longbridge/gpui-kit). Local First, Desktop (macOS, Windows, Linux).
 
-**Status:** Editor (Dateibaum, Tree-sitter, Tabs, Split), Schreibhilfen für Markdown/Typst mit Live-Druckvorschau und PDF-Export, Notizen mit SQLite.
+**Status:** Editor (Dateibaum, Tree-sitter, Tabs, Split), Schreibhilfen für Markdown/Typst mit Live-Druckvorschau und PDF-Export, Notizen mit SQLite und optionalem Ordner-Sync.
 Der frühere Flutter-Stand liegt im Branch `archive/flutter-v0.1`.
 
 ## Starten
@@ -16,7 +16,8 @@ cargo run -p devmark -- <ordner-oder-datei>
 - **Editor:** Dateibaum, Syntax-Highlighting, Tabs, geteilte Ansicht, Öffnen-Dialog.
 - **Schreiben (Markdown, Typst):** Formatleiste, Menüs „Format“/„Einfügen“, `/` am Zeilenanfang öffnet eine Einfüge-Liste, Erklärung beim Überfahren von Syntax, Spickzettel. „Neues Dokument“ legt Artikel, Bericht, Brief (DIN 5008), Buchkapitel, README oder Notiz an.
 - **Druck:** Live-Vorschau neben dem Text; Export als PDF (Typst-Satz) oder Umwandlung Markdown → Typst zum Weiterarbeiten.
-- **Notizen:** sofort schreiben ohne Dateinamen, Autosave, Volltextsuche, Favoriten, Papierkorb (30 Tage), Versionsverlauf, Export aller Notizen als Dateien, tägliches Backup.
+- **Notizen:** sofort schreiben ohne Dateinamen, Autosave, Volltextsuche, `#tags` im Text, Favoriten, Papierkorb (30 Tage), Versionsverlauf, Export aller Notizen als Dateien, tägliches Backup.
+- **Sync (optional):** Menü Notizen → „Sync-Ordner wählen …“ – ein Ordner, den iCloud Drive, Nextcloud, Dropbox oder Syncthing verteilt. Gleichzeitige Änderungen werden zu Konfliktkopien, nichts wird still überschrieben.
 
 | Taste | Aktion |
 |---|---|
@@ -34,6 +35,12 @@ cargo run -p devmark -- <ordner-oder-datei>
 | Cmd/Ctrl-Shift-/ | Spickzettel |
 | Cmd/Ctrl-Shift-E | PDF exportieren |
 | Cmd/Ctrl-Shift-T | Markdown → Typst |
+
+## macOS-App bauen
+
+```sh
+scripts/bundle-macos.sh --install   # DevMark.app nach /Applications
+```
 
 ## Markdown → Typst auf der Kommandozeile
 
@@ -55,6 +62,7 @@ Notizen liegen in einer SQLite-Datenbank (macOS: `~/Library/Application Support/
 | `crates/writing` | Markdown/MDX → Typst, PDF/Vorschau, Formatieraktionen, Vorlagen |
 | `crates/storage` | SQLite, Migrationen, Änderungsprotokoll, Backups |
 | `crates/notes` | Notizen: Dokumente, Ordner, Tags, Suche, Revisionen, Papierkorb, Export |
+| `crates/sync` | Synchronisierung über austauschbare Transporte (Sync-Ordner) |
 
 ## Lizenz
 
