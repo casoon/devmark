@@ -9,4 +9,4 @@ pub mod pdf;
 pub mod templates;
 
 pub use markdown::{Conversion, Options, markdown_to_typst};
-pub use pdf::{CompileError, Compiled, compile_pdf};
+pub use pdf::{CompileError, Compiled, Rendered, RenderedPage, compile_pdf, render_pages};

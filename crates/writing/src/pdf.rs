@@ -36,6 +36,54 @@ pub fn compile_pdf(source: &str, main_path: &Path) -> Result<Compiled, CompileEr
     Ok(Compiled { pdf, pages: document.pages().len(), warnings })
 }
 
+/// Kompiliert `source` und rendert die Seiten als PNG (für die Vorschau in der App).
+///
+/// `pixel_per_pt` bestimmt die Auflösung (2.0 ≈ Retina bei 100 % Zoom); höchstens
+/// `max_pages` Seiten werden gerendert.
+pub fn render_pages(
+    source: &str,
+    main_path: &Path,
+    pixel_per_pt: f64,
+    max_pages: usize,
+) -> Result<Rendered, CompileError> {
+    let world = DevmarkWorld::new(source, main_path);
+    let warned = typst::compile::<PagedDocument>(&world);
+    let warnings = warned.warnings.iter().map(|d| world.describe(d)).collect();
+    let document = warned
+        .output
+        .map_err(|errors| CompileError::Typst(errors.iter().map(|d| world.describe(d)).collect()))?;
+    let options = typst_render::RenderOptions {
+        pixel_per_pt: typst::utils::Scalar::new(pixel_per_pt),
+        render_bleed: false,
+    };
+    let pages = document
+        .pages()
+        .iter()
+        .take(max_pages)
+        .map(|page| {
+            let pixmap = typst_render::render(page, &options);
+            RenderedPage {
+                width: pixmap.width(),
+                height: pixmap.height(),
+                png: pixmap.encode_png().unwrap_or_default(),
+            }
+        })
+        .collect();
+    Ok(Rendered { pages, total_pages: document.pages().len(), warnings })
+}
+
+pub struct Rendered {
+    pub pages: Vec<RenderedPage>,
+    pub total_pages: usize,
+    pub warnings: Vec<String>,
+}
+
+pub struct RenderedPage {
+    pub width: u32,
+    pub height: u32,
+    pub png: Vec<u8>,
+}
+
 pub struct Compiled {
     pub pdf: Vec<u8>,
     pub pages: usize,
@@ -221,6 +269,14 @@ mod tests {
         let compiled = compile_pdf("= Hallo\n\nWelt $x^2$", Path::new("/tmp/devmark-test.typ")).unwrap();
         assert!(compiled.pdf.starts_with(b"%PDF"));
         assert_eq!(compiled.pages, 1);
+    }
+
+    #[test]
+    fn renders_pages_as_png() {
+        let rendered = render_pages("= Hallo\n#pagebreak()\nZwei", Path::new("/tmp/devmark-test.typ"), 1.0, 10).unwrap();
+        assert_eq!(rendered.pages.len(), 2);
+        assert!(rendered.pages[0].png.starts_with(b"\x89PNG"));
+        assert_eq!(rendered.pages[0].width, 595);
     }
 
     #[test]

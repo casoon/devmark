@@ -5,10 +5,12 @@ mod assist;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::time::Duration;
 
 use devmark_writing::authoring::{self, Action as Format, Syntax};
 use devmark_writing::templates::{DocInfo, DocType};
-use devmark_writing::{Options, compile_pdf, markdown_to_typst};
+use devmark_writing::{Options, compile_pdf, markdown_to_typst, render_pages};
 use gpui_kit::assets::{Assets, IconName as AssetIcon, icon_assets};
 use gpui_kit::component::{
     ActiveTheme, IconName, Selectable, Sizable, WindowExt,
@@ -39,6 +41,7 @@ actions!(
         ExportTypst,
         ExportPdf,
         ToggleHelp,
+        TogglePreview,
         FormatBold,
         FormatItalic,
         FormatStrike,
@@ -167,6 +170,20 @@ struct NewDocForm {
     author: Entity<InputState>,
 }
 
+/// Live-Vorschau: gerenderte Seiten des aktiven Markdown-/Typst-Dokuments.
+#[derive(Default)]
+struct Preview {
+    path: Option<PathBuf>,
+    /// Seite + Seitenverhältnis (Breite/Höhe).
+    pages: Vec<(Arc<Image>, f32)>,
+    total_pages: usize,
+    error: Option<String>,
+}
+
+/// Vorschau-Auflösung: 1,5 Pixel pro Punkt ist auf Retina scharf genug und schnell.
+const PREVIEW_PIXEL_PER_PT: f64 = 1.5;
+const PREVIEW_MAX_PAGES: usize = 60;
+
 struct Workspace {
     root: PathBuf,
     tree_state: Entity<TreeState>,
@@ -174,6 +191,9 @@ struct Workspace {
     active_pane: usize,
     split: bool,
     show_help: bool,
+    show_preview: bool,
+    preview: Preview,
+    preview_task: Task<()>,
     new_doc: Option<NewDocForm>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -208,6 +228,9 @@ impl Workspace {
             active_pane: 0,
             split: false,
             show_help: false,
+            show_preview: false,
+            preview: Preview::default(),
+            preview_task: Task::ready(()),
             new_doc: None,
             _subscriptions: Vec::new(),
         }
@@ -257,6 +280,7 @@ impl Workspace {
         let pane_ix = self.active_pane;
         if let Some(ix) = self.panes[pane_ix].buffers.iter().position(|b| b.path == path) {
             self.panes[pane_ix].active = ix;
+            self.schedule_preview(Duration::ZERO, cx);
             cx.notify();
             return;
         }
@@ -302,6 +326,9 @@ impl Workspace {
                 if let Some(buffer) = this.buffer_for_editor(&editor) {
                     buffer.dirty = true;
                 }
+                if this.active_buffer().is_some_and(|b| b.editor == editor) {
+                    this.schedule_preview(Duration::from_millis(400), cx);
+                }
                 cx.notify();
             }
         });
@@ -317,6 +344,7 @@ impl Workspace {
             dirty: false,
         });
         pane.active = pane.buffers.len() - 1;
+        self.schedule_preview(Duration::ZERO, cx);
         cx.notify();
     }
 
@@ -376,6 +404,78 @@ impl Workspace {
     fn toggle_help(&mut self, _: &ToggleHelp, _window: &mut Window, cx: &mut Context<Self>) {
         self.show_help = !self.show_help;
         cx.notify();
+    }
+
+    fn toggle_preview(&mut self, _: &TogglePreview, _window: &mut Window, cx: &mut Context<Self>) {
+        self.show_preview = !self.show_preview;
+        self.schedule_preview(Duration::ZERO, cx);
+        cx.notify();
+    }
+
+    /// Setzt das aktive Dokument nach `delay` im Hintergrund neu (vorige Anfrage verfällt).
+    fn schedule_preview(&mut self, delay: Duration, cx: &mut Context<Self>) {
+        if !self.show_preview {
+            return;
+        }
+        let Some(buffer) = self.active_buffer() else {
+            return;
+        };
+        let Some(syntax) = buffer.syntax else {
+            return;
+        };
+        let source = buffer.editor.read(cx).value().to_string();
+        let path = buffer.path.clone();
+        self.preview_task = cx.spawn(async move |this, cx| {
+            if !delay.is_zero() {
+                cx.background_executor().timer(delay).await;
+            }
+            let render_path = path.clone();
+            let result = cx
+                .background_spawn(async move {
+                    let (typst, main_path) = match syntax {
+                        Syntax::Markdown => (
+                            markdown_to_typst(&source, &Options::for_file(&render_path)).typst,
+                            render_path.with_extension("typ"),
+                        ),
+                        Syntax::Typst => (source, render_path),
+                    };
+                    render_pages(&typst, &main_path, PREVIEW_PIXEL_PER_PT, PREVIEW_MAX_PAGES)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                let same_document = this.preview.path.as_ref() == Some(&path);
+                match result {
+                    Ok(rendered) => {
+                        let pages = rendered
+                            .pages
+                            .into_iter()
+                            .map(|page| {
+                                let ratio = page.width as f32 / page.height.max(1) as f32;
+                                (Arc::new(Image::from_bytes(ImageFormat::Png, page.png)), ratio)
+                            })
+                            .collect();
+                        let old = std::mem::replace(&mut this.preview.pages, pages);
+                        for (image, _) in old {
+                            ImageSource::Image(image).remove_asset(cx);
+                        }
+                        this.preview.total_pages = rendered.total_pages;
+                        this.preview.error = None;
+                    }
+                    Err(err) => {
+                        // Letzten guten Stand stehen lassen, Fehler darüber anzeigen.
+                        if !same_document {
+                            for (image, _) in std::mem::take(&mut this.preview.pages) {
+                                ImageSource::Image(image).remove_asset(cx);
+                            }
+                        }
+                        this.preview.error = Some(err.to_string());
+                    }
+                }
+                this.preview.path = Some(path);
+                cx.notify();
+            })
+            .ok();
+        });
     }
 
     // ---- Formatieren ----
@@ -673,6 +773,16 @@ impl Workspace {
             );
         }
         bar.child(
+            Button::new("preview")
+                .ghost()
+                .xsmall()
+                .icon(AssetIcon::Eye)
+                .label("Vorschau")
+                .selected(self.show_preview)
+                .tooltip_with_action("Druckvorschau neben dem Text ein-/ausblenden", &TogglePreview, None)
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_preview(&TogglePreview, window, cx))),
+        )
+        .child(
             Button::new("export-pdf")
                 .ghost()
                 .xsmall()
@@ -752,6 +862,63 @@ impl Workspace {
             );
         }
         list
+    }
+
+    fn render_preview(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut column = v_flex()
+            .id("preview-panel")
+            .size_full()
+            .overflow_y_scroll()
+            .p_4()
+            .gap_4()
+            .bg(cx.theme().muted);
+        if let Some(error) = &self.preview.error {
+            let lines: Vec<&str> = error.lines().take(6).collect();
+            column = column.child(
+                div()
+                    .p_2()
+                    .rounded(cx.theme().radius)
+                    .border_1()
+                    .border_color(cx.theme().danger)
+                    .bg(cx.theme().background)
+                    .text_xs()
+                    .text_color(cx.theme().danger)
+                    .child(lines.join("\n")),
+            );
+        }
+        if self.preview.pages.is_empty() && self.preview.error.is_none() {
+            column = column.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Vorschau wird erstellt …"),
+            );
+        }
+        for (ix, (image, ratio)) in self.preview.pages.iter().enumerate() {
+            column = column.child(
+                div()
+                    .id(("preview-page", ix))
+                    .w_full()
+                    .aspect_ratio(*ratio)
+                    .flex_none()
+                    .bg(gpui_kit::white())
+                    .shadow_md()
+                    .child(img(image.clone()).size_full()),
+            );
+        }
+        if self.preview.total_pages > self.preview.pages.len() {
+            column = column.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!(
+                        "Vorschau zeigt die ersten {} von {} Seiten – „PDF“ erzeugt das ganze Dokument.",
+                        self.preview.pages.len(),
+                        self.preview.total_pages
+                    )),
+            );
+        }
+        column
     }
 
     fn render_new_document(&self, form: &NewDocForm, cx: &mut Context<Self>) -> impl IntoElement {
@@ -878,6 +1045,7 @@ impl Workspace {
                     this.active_pane = pane_ix;
                     this.panes[pane_ix].active = ix;
                     this.new_doc = None;
+                    this.schedule_preview(Duration::ZERO, cx);
                     cx.notify();
                 });
             });
@@ -953,17 +1121,19 @@ impl Render for Workspace {
             self.render_pane(0, cx).into_any_element()
         };
 
-        let active_syntax = self.active_buffer().and_then(|b| b.syntax);
-        let main = match active_syntax.filter(|_| self.show_help) {
-            Some(syntax) => h_resizable("help-split")
-                .child(resizable_panel().child(editors))
-                .child(
-                    resizable_panel()
-                        .size(px(320.))
-                        .child(self.render_help(syntax, cx)),
-                )
-                .into_any_element(),
-            None => editors,
+        let active_syntax = self.active_buffer().and_then(|b| b.syntax).filter(|_| self.new_doc.is_none());
+        let main = match active_syntax {
+            Some(syntax) if self.show_help || self.show_preview => {
+                let mut group = h_resizable("writing-split").child(resizable_panel().child(editors));
+                if self.show_preview {
+                    group = group.child(resizable_panel().size(px(460.)).child(self.render_preview(cx)));
+                }
+                if self.show_help {
+                    group = group.child(resizable_panel().size(px(300.)).child(self.render_help(syntax, cx)));
+                }
+                group.into_any_element()
+            }
+            _ => editors,
         };
 
         let status = self
@@ -988,6 +1158,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::toggle_split))
             .on_action(cx.listener(Self::toggle_help))
+            .on_action(cx.listener(Self::toggle_preview))
             .on_action(cx.listener(Self::new_document))
             .on_action(cx.listener(Self::export_typst))
             .on_action(cx.listener(Self::export_pdf));
@@ -1159,6 +1330,7 @@ fn main() {
             KeyBinding::new("secondary-\\", ToggleSplit, None),
             KeyBinding::new("secondary-q", Quit, None),
             KeyBinding::new("secondary-shift-/", ToggleHelp, None),
+            KeyBinding::new("secondary-shift-v", TogglePreview, None),
             KeyBinding::new("secondary-shift-e", ExportPdf, None),
             KeyBinding::new("secondary-shift-t", ExportTypst, None),
             KeyBinding::new("secondary-b", FormatBold, None),
@@ -1219,6 +1391,7 @@ fn main() {
             ]),
             Menu::new("Ansicht").items([
                 MenuItem::action("Split umschalten", ToggleSplit),
+                MenuItem::action("Vorschau", TogglePreview),
                 MenuItem::action("Spickzettel", ToggleHelp),
             ]),
         ]);
