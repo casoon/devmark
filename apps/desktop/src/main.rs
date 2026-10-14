@@ -1356,6 +1356,7 @@ impl Render for Workspace {
 fn language_for(path: &Path) -> String {
     match path.extension().and_then(|e| e.to_str()).unwrap_or_default() {
         "rs" => "rust",
+        "typ" => "typst",
         "md" | "markdown" | "mdx" => "markdown",
         "ts" | "mts" | "cts" => "typescript",
         "tsx" => "tsx",
@@ -1367,6 +1368,22 @@ fn language_for(path: &Path) -> String {
     }
     .to_string()
 }
+
+/// Typst-Grammatik registrieren (gpui-kit bringt keine mit).
+fn register_typst_language() {
+    use gpui_kit::component::highlighter::{LanguageConfig, LanguageRegistry};
+    let config = LanguageConfig::new(
+        "typst",
+        codebook_tree_sitter_typst::LANGUAGE.into(),
+        vec![],
+        TYPST_HIGHLIGHTS,
+        "",
+        "",
+    );
+    LanguageRegistry::singleton().register("typst", &config);
+}
+
+const TYPST_HIGHLIGHTS: &str = include_str!("typst-highlights.scm");
 
 fn file_name(path: &Path) -> String {
     path.file_name()
@@ -1462,6 +1479,7 @@ fn main() {
 
     gpui_kit::application().with_assets(AppAssets).run(move |cx| {
         gpui_kit::init(cx);
+        register_typst_language();
         cx.bind_keys([
             KeyBinding::new("secondary-o", Open, None),
             KeyBinding::new("secondary-n", NewDocument, None),
@@ -1579,4 +1597,15 @@ fn default_root() -> PathBuf {
         .map(|home| PathBuf::from(home).join("Documents"))
         .filter(|docs| docs.is_dir())
         .unwrap_or(cwd)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn typst_highlight_query_matches_grammar() {
+        let language: tree_sitter::Language = codebook_tree_sitter_typst::LANGUAGE.into();
+        if let Err(err) = tree_sitter::Query::new(&language, super::TYPST_HIGHLIGHTS) {
+            panic!("{err}");
+        }
+    }
 }

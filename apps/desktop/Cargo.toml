@@ -6,7 +6,9 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
+codebook-tree-sitter-typst = "0.12.1"
 devmark-notes = { path = "../../crates/notes" }
 devmark-writing = { path = "../../crates/writing" }
 gpui-kit.workspace = true
 lsp-types = "0.97.0"
+tree-sitter = "0.26.13"
