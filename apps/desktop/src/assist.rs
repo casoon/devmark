@@ -1,6 +1,8 @@
 //! Schreibhilfen im Editor ohne Language Server: Einfüge-Liste per `/` am Zeilenanfang und
 //! Erklärungen beim Überfahren von Markdown-/Typst-Syntax.
 
+use std::cell::RefCell;
+
 use devmark_writing::authoring::{self, Action, Syntax};
 use gpui_kit::component::input::{CompletionProvider, HoverProvider, Position, Rope, RopeExt};
 use gpui_kit::{App, Task, Window};
@@ -11,7 +13,15 @@ use lsp_types::{
 
 pub struct WritingAssist {
     pub syntax: Syntax,
+    /// Zuletzt angebotene `/`-Einfügungen: Position des `/`, Einfügetexte mit Platzhaltern.
+    pub offered: RefCell<Option<(usize, Vec<Snippet>)>>,
 }
+/// Einfügetext einer `/`-Aktion und seine Platzhalter relativ zum Anfang.
+pub struct Snippet {
+    text: String,
+    placeholders: Vec<std::ops::Range<usize>>,
+}
+
 
 impl WritingAssist {
     /// Text vor dem Cursor in der aktuellen Zeile.
@@ -19,6 +29,19 @@ impl WritingAssist {
         let position = text.offset_to_position(offset);
         let line_start = text.position_to_offset(&Position::new(position.line, 0));
         (line_start, text.slice(line_start..offset).to_string())
+    }
+
+    /// Wurde gerade eine angebotene `/`-Einfügung übernommen (Text endet am Cursor)? Dann
+    /// ihre Platzhalter im ganzen Text.
+    pub fn accepted_snippet(&self, text: &Rope, cursor: usize) -> Option<Vec<std::ops::Range<usize>>> {
+        let mut offered = self.offered.borrow_mut();
+        let (slash, snippets) = offered.as_ref()?;
+        let slash = (*slash <= cursor).then_some(*slash)?;
+        let inserted = text.slice(slash..cursor).to_string();
+        let snippet = snippets.iter().find(|s| s.text == inserted)?;
+        let placeholders = snippet.placeholders.iter().map(|r| slash + r.start..slash + r.end).collect();
+        *offered = None;
+        Some(placeholders)
     }
 }
 
@@ -40,6 +63,7 @@ impl CompletionProvider for WritingAssist {
         let slash = line_start + indent;
         let range = Range::new(text.offset_to_position(slash), text.offset_to_position(offset));
 
+        let mut snippets = Vec::new();
         let items = Action::ALL
             .iter()
             .filter(|action| action.available(self.syntax))
@@ -51,7 +75,9 @@ impl CompletionProvider for WritingAssist {
             .enumerate()
             .map(|(ix, &action)| {
                 // Einfügetext = Ergebnis der Aktion auf einer leeren Zeile, mit Platzhaltern.
-                let snippet = authoring::apply(action, self.syntax, "", 0..0).apply_to("");
+                let edit = authoring::apply(action, self.syntax, "", 0..0);
+                let snippet = edit.apply_to("");
+                snippets.push(Snippet { text: snippet.clone(), placeholders: edit.placeholders });
                 CompletionItem {
                     label: action.label().to_string(),
                     kind: Some(CompletionItemKind::SNIPPET),
@@ -69,6 +95,7 @@ impl CompletionProvider for WritingAssist {
                 }
             })
             .collect();
+        *self.offered.borrow_mut() = Some((slash, snippets));
         Task::ready(Ok(CompletionResponse::Array(items)))
     }
 

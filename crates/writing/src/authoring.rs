@@ -1,6 +1,7 @@
 //! Formatier- und Einfügeaktionen für Markdown und Typst – unabhängig von der UI.
 //!
-//! Jede Aktion arbeitet auf Text + Auswahl und liefert Änderungen samt neuer Auswahl.
+//! Jede Aktion arbeitet auf Text + Auswahl und liefert Änderungen samt Platzhaltern, die
+//! nacheinander per Tab angesprungen werden können (siehe [`Tabstops`]).
 //! So können Toolbar, Tastenkürzel, Einfüge-Palette (`/`) und Spickzettel dieselbe Logik
 //! nutzen, und man muss die Syntax nicht kennen.
 
@@ -266,15 +267,25 @@ pub struct Change {
     pub text: String,
 }
 
-/// Ergebnis einer Aktion: Änderungen (nicht überlappend, aufsteigend) und die Auswahl
-/// danach in Koordinaten des neuen Texts.
+/// Ergebnis einer Aktion: Änderungen (nicht überlappend, aufsteigend) und die Platzhalter
+/// in Koordinaten des neuen Texts, in Tab-Reihenfolge. Der erste ist die Auswahl danach;
+/// es gibt immer mindestens einen (ggf. leer = nur Cursor).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Edit {
     pub changes: Vec<Change>,
-    pub selection: Range<usize>,
+    pub placeholders: Vec<Range<usize>>,
 }
 
 impl Edit {
+    fn new(changes: Vec<Change>, selection: Range<usize>) -> Self {
+        Self { changes, placeholders: vec![selection] }
+    }
+
+    /// Auswahl direkt nach der Aktion.
+    pub fn selection(&self) -> Range<usize> {
+        self.placeholders[0].clone()
+    }
+
     /// Wendet die Änderungen auf `text` an (für Tests und UI ohne Teiländerungen).
     pub fn apply_to(&self, text: &str) -> String {
         let mut out = text.to_string();
@@ -310,33 +321,38 @@ pub fn apply(action: Action, syntax: Syntax, text: &str, selection: Range<usize>
         Action::Image => match syntax {
             Syntax::Markdown => {
                 let alt = selected_or(text, &selection, "Beschreibung");
-                insert_block(text, selection, &format!("![{alt}]("), "bild.png", ")")
+                // Erst der Pfad, dann die Beschreibung.
+                let mut edit = insert_block(text, selection, &["![", &alt, "](", "bild.png", ")"]);
+                edit.placeholders.rotate_left(1);
+                edit
             }
             Syntax::Typst => {
                 let caption = selected_or(text, &selection, "Beschreibung");
-                insert_block(text, selection, "#figure(\n  image(\"", "bild.png", &format!("\"),\n  caption: [{caption}],\n)"))
+                insert_block(text, selection, &["#figure(\n  image(\"", "bild.png", "\"),\n  caption: [", &caption, "],\n)"])
             }
         },
         Action::Table => match syntax {
-            Syntax::Markdown => insert_block(text, selection, "| ", "Spalte 1", " | Spalte 2 |\n| --- | --- |\n| Wert | Wert |"),
+            Syntax::Markdown => insert_block(
+                text,
+                selection,
+                &["| ", "Spalte 1", " | ", "Spalte 2", " |\n| --- | --- |\n| ", "Wert", " | ", "Wert", " |"],
+            ),
             Syntax::Typst => insert_block(
                 text,
                 selection,
-                "#table(\n  columns: 2,\n  table.header([",
-                "Spalte 1",
-                "], [Spalte 2]),\n  [Wert], [Wert],\n)",
+                &["#table(\n  columns: 2,\n  table.header([", "Spalte 1", "], [", "Spalte 2", "]),\n  [", "Wert", "], [", "Wert", "],\n)"],
             ),
         },
         Action::CodeBlock => {
             let code = selected_or(text, &selection, "Code");
-            insert_block(text, selection, "```", "text", &format!("\n{code}\n```"))
+            insert_block(text, selection, &["```", "text", "\n", &code, "\n```"])
         }
         Action::Footnote => footnote(text, selection, syntax),
         Action::Callout => match syntax {
             Syntax::Markdown => {
                 let body = selected_or(text, &selection, "Hinweistext");
                 let body = body.lines().collect::<Vec<_>>().join("\n> ");
-                insert_block(text, selection, "> [!NOTE]\n> ", &body, "")
+                insert_block(text, selection, &["> [!NOTE]\n> ", &body])
             }
             Syntax::Typst => block_wrap(
                 text,
@@ -352,11 +368,11 @@ pub fn apply(action: Action, syntax: Syntax, text: &str, selection: Range<usize>
             Syntax::Typst => block_wrap(text, selection, "$ ", " $", "a^2 + b^2 = c^2"),
         },
         Action::Rule => match syntax {
-            Syntax::Markdown => insert_block(text, selection, "---", "", ""),
-            Syntax::Typst => insert_block(text, selection, "#line(length: 100%)", "", ""),
+            Syntax::Markdown => insert_block(text, selection, &["---"]),
+            Syntax::Typst => insert_block(text, selection, &["#line(length: 100%)"]),
         },
-        Action::PageBreak => insert_block(text, selection, "#pagebreak()", "", ""),
-        Action::Outline => insert_block(text, selection, "#outline()", "", ""),
+        Action::PageBreak => insert_block(text, selection, &["#pagebreak()"]),
+        Action::Outline => insert_block(text, selection, &["#outline()"]),
     }
 }
 
@@ -390,25 +406,22 @@ fn wrap(text: &str, selection: Range<usize>, pre: &str, post: &str, placeholder:
         && text[selection.end..].starts_with(post)
     {
         let start = selection.start - pre.len();
-        return Edit {
-            changes: vec![Change { range: start..selection.end + post.len(), text: selected.to_string() }],
-            selection: start..start + selected.len(),
-        };
+        return Edit::new(
+            vec![Change { range: start..selection.end + post.len(), text: selected.to_string() }],
+            start..start + selected.len(),
+        );
     }
     // Markierungen in der Auswahl → entfernen.
     if selected.len() >= pre.len() + post.len() && selected.starts_with(pre) && selected.ends_with(post) {
         let inner = &selected[pre.len()..selected.len() - post.len()];
-        return Edit {
-            changes: vec![Change { range: selection.clone(), text: inner.to_string() }],
-            selection: selection.start..selection.start + inner.len(),
-        };
+        return Edit::new(
+            vec![Change { range: selection.clone(), text: inner.to_string() }],
+            selection.start..selection.start + inner.len(),
+        );
     }
     let inner = if selected.is_empty() { placeholder } else { selected };
     let start = selection.start + pre.len();
-    Edit {
-        changes: vec![Change { range: selection, text: format!("{pre}{inner}{post}") }],
-        selection: start..start + inner.len(),
-    }
+    Edit::new(vec![Change { range: selection, text: format!("{pre}{inner}{post}") }], start..start + inner.len())
 }
 
 fn link(text: &str, selection: Range<usize>, syntax: Syntax) -> Edit {
@@ -424,17 +437,20 @@ fn link(text: &str, selection: Range<usize>, syntax: Syntax) -> Edit {
         Syntax::Typst => (format!("#link(\"{url}\")[{label}]"), 7),
     };
     let start = selection.start;
-    // Ohne Auswahl den Linktext markieren, sonst die Adresse.
-    let select = if selected.is_empty() {
-        let label_offset = match syntax {
-            Syntax::Markdown => 1,
-            Syntax::Typst => url.len() + 10,
-        };
-        start + label_offset..start + label_offset + label.len()
-    } else {
-        start + url_offset..start + url_offset + url.len()
+    let label_offset = match syntax {
+        Syntax::Markdown => 1,
+        Syntax::Typst => url.len() + 10,
     };
-    Edit { changes: vec![Change { range: selection, text: replacement }], selection: select }
+    let label_range = start + label_offset..start + label_offset + label.len();
+    let url_range = start + url_offset..start + url_offset + url.len();
+    // Ohne Auswahl erst Linktext, dann Adresse; ist die Auswahl schon eine Adresse, nur den
+    // Linktext; sonst nur die Adresse.
+    let placeholders = match (selected.is_empty(), looks_like_url) {
+        (true, _) => vec![label_range, url_range],
+        (false, true) => vec![label_range],
+        (false, false) => vec![url_range],
+    };
+    Edit { changes: vec![Change { range: selection, text: replacement }], placeholders }
 }
 
 /// Bereich der vollständigen Zeilen, die die Auswahl berührt.
@@ -471,10 +487,10 @@ fn heading(text: &str, selection: Range<usize>, syntax: Syntax, level: u8) -> Ed
     let content = line[prefix_len..].trim_start();
     if current == level as usize {
         // Gleiche Ebene → Überschrift entfernen.
-        return Edit {
-            changes: vec![Change { range: lines.start..lines.start + prefix_len, text: String::new() }],
-            selection: lines.start..lines.start + content.len(),
-        };
+        return Edit::new(
+            vec![Change { range: lines.start..lines.start + prefix_len, text: String::new() }],
+            lines.start..lines.start + content.len(),
+        );
     }
     let marker = match syntax {
         Syntax::Markdown => "#",
@@ -484,10 +500,7 @@ fn heading(text: &str, selection: Range<usize>, syntax: Syntax, level: u8) -> Ed
     let content = if content.is_empty() { "Überschrift" } else { content };
     let new_line = format!("{prefix}{content}");
     let start = lines.start + prefix.len();
-    Edit {
-        changes: vec![Change { range: lines, text: new_line }],
-        selection: start..start + content.len(),
-    }
+    Edit::new(vec![Change { range: lines, text: new_line }], start..start + content.len())
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -569,12 +582,13 @@ fn line_prefix(text: &str, selection: Range<usize>, kind: ListKind, syntax: Synt
     } else {
         lines.start..lines.start + new_block.len()
     };
-    Edit { changes: vec![Change { range: lines, text: new_block }], selection }
+    Edit::new(vec![Change { range: lines, text: new_block }], selection)
 }
 
-/// Fügt einen Block als eigenen Absatz ein (Leerzeilen davor/danach nach Bedarf) und
-/// markiert `placeholder`.
-fn insert_block(text: &str, selection: Range<usize>, before: &str, placeholder: &str, after: &str) -> Edit {
+/// Fügt einen Block als eigenen Absatz ein (Leerzeilen davor/danach nach Bedarf). `parts`
+/// wechselt zwischen festem Text und Platzhaltern (ungerade Indizes); ohne Platzhalter steht
+/// der Cursor danach am Blockende.
+fn insert_block(text: &str, selection: Range<usize>, parts: &[&str]) -> Edit {
     let line_start = text[..selection.start].rfind('\n').map_or(0, |i| i + 1);
     let line_end = text[selection.end..].find('\n').map_or(text.len(), |i| selection.end + i);
     let line_empty = text[line_start..selection.start].trim().is_empty()
@@ -604,17 +618,24 @@ fn insert_block(text: &str, selection: Range<usize>, before: &str, placeholder: 
     } else {
         "\n\n"
     };
-    let start = range.start + lead.len() + before.len();
-    Edit {
-        changes: vec![Change { range, text: format!("{lead}{before}{placeholder}{after}{trail}") }],
-        selection: start..start + placeholder.len(),
+    let mut offset = range.start + lead.len();
+    let mut placeholders = Vec::new();
+    for (ix, part) in parts.iter().enumerate() {
+        if ix % 2 == 1 {
+            placeholders.push(offset..offset + part.len());
+        }
+        offset += part.len();
     }
+    if placeholders.is_empty() {
+        placeholders.push(offset..offset);
+    }
+    Edit { changes: vec![Change { range, text: format!("{lead}{}{trail}", parts.concat()) }], placeholders }
 }
 
 /// Wie `insert_block`, aber die Auswahl (oder der Platzhalter) steht zwischen `pre` und `post`.
 fn block_wrap(text: &str, selection: Range<usize>, pre: &str, post: &str, placeholder: &str) -> Edit {
     let content = selected_or(text, &selection, placeholder);
-    insert_block(text, selection, pre, &content, post)
+    insert_block(text, selection, &[pre, &content, post])
 }
 
 fn footnote(text: &str, selection: Range<usize>, syntax: Syntax) -> Edit {
@@ -623,10 +644,7 @@ fn footnote(text: &str, selection: Range<usize>, syntax: Syntax) -> Edit {
             let body = selected_or(text, &selection, "Fußnotentext");
             let replacement = format!("#footnote[{body}]");
             let start = selection.start + "#footnote[".len();
-            Edit {
-                changes: vec![Change { range: selection, text: replacement }],
-                selection: start..start + body.len(),
-            }
+            Edit::new(vec![Change { range: selection, text: replacement }], start..start + body.len())
         }
         Syntax::Markdown => {
             let mut n = 1;
@@ -647,15 +665,101 @@ fn footnote(text: &str, selection: Range<usize>, syntax: Syntax) -> Edit {
             let removed = selection.len();
             let new_len = text.len() - removed + reference.len();
             let body_start = new_len + separator.len() + reference.len() + 2;
-            Edit {
-                changes: vec![
+            Edit::new(
+                vec![
                     Change { range: selection, text: reference },
                     Change { range: text.len()..text.len(), text: definition },
                 ],
-                selection: body_start..body_start + body.len(),
-            }
+                body_start..body_start + body.len(),
+            )
         }
     }
+}
+
+/// Platzhalter einer eingefügten Vorlage, die per Tab nacheinander angesprungen werden
+/// (wie Snippets in VS Code/Zettlr). Merkt sich den Text, um Eingaben nachzuverfolgen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tabstops {
+    ranges: Vec<Range<usize>>,
+    current: usize,
+    text: String,
+}
+
+impl Tabstops {
+    /// Nur sinnvoll ab zwei Platzhaltern; `text` ist der Text nach dem Einfügen.
+    pub fn new(placeholders: Vec<Range<usize>>, text: String) -> Option<Self> {
+        (placeholders.len() > 1).then_some(Self { ranges: placeholders, current: 0, text })
+    }
+
+    pub fn current(&self) -> Range<usize> {
+        self.ranges[self.current].clone()
+    }
+
+    /// Nächster Platzhalter; `None` beim letzten (Modus endet).
+    pub fn next_range(&mut self) -> Option<Range<usize>> {
+        if self.current + 1 == self.ranges.len() {
+            return None;
+        }
+        self.current += 1;
+        Some(self.current())
+    }
+
+    /// Vorheriger Platzhalter (bleibt beim ersten stehen).
+    pub fn prev_range(&mut self) -> Range<usize> {
+        self.current = self.current.saturating_sub(1);
+        self.current()
+    }
+
+    /// Liegt `offset` innerhalb der eingefügten Vorlage (erster bis letzter Platzhalter)?
+    pub fn contains(&self, offset: usize) -> bool {
+        let first = self.ranges.first().map_or(0, |r| r.start);
+        let last = self.ranges.last().map_or(0, |r| r.end);
+        (first..=last).contains(&offset)
+    }
+
+    /// Gleicht mit dem neuen Text ab (`cursor` = Cursor danach). Änderungen im aktuellen
+    /// Platzhalter verschieben die folgenden; `false` bei Änderungen außerhalb (Modus endet).
+    pub fn sync(&mut self, text: &str, cursor: usize) -> bool {
+        let (old, new_len) = text_change(&self.text, text, cursor);
+        self.text = text.to_string();
+        if old.is_empty() && new_len == 0 {
+            return true;
+        }
+        let current = self.current();
+        if old.start < current.start || old.end > current.end {
+            return false;
+        }
+        let delta = new_len as isize - old.len() as isize;
+        let shift = |i: usize| i.checked_add_signed(delta).unwrap_or(0);
+        self.ranges[self.current].end = shift(current.end);
+        for range in &mut self.ranges[self.current + 1..] {
+            *range = shift(range.start)..shift(range.end);
+        }
+        true
+    }
+}
+
+/// Ermittelt die Änderung von `old` zu `new` als (ersetzter Bereich in `old`, Länge des neuen
+/// Texts). Bei Mehrdeutigkeit (z. B. gleiches Zeichen hinter dem Cursor) endet die Änderung
+/// am `cursor` – dort, wo getippt wurde.
+fn text_change(old: &str, new: &str, cursor: usize) -> (Range<usize>, usize) {
+    let max_suffix = new.len().saturating_sub(cursor).min(old.len());
+    let mut suffix = old
+        .bytes()
+        .rev()
+        .zip(new.bytes().rev())
+        .take(max_suffix)
+        .take_while(|(a, b)| a == b)
+        .count();
+    while !new.is_char_boundary(new.len() - suffix) || !old.is_char_boundary(old.len() - suffix) {
+        suffix -= 1;
+    }
+    let max_prefix = (old.len() - suffix).min(new.len() - suffix);
+    let mut prefix = old.bytes().zip(new.bytes()).take(max_prefix).take_while(|(a, b)| a == b).count();
+    while !new.is_char_boundary(prefix) || !old.is_char_boundary(prefix) {
+        prefix -= 1;
+    }
+    (prefix..old.len() - suffix, new.len() - suffix - prefix)
 }
 
 #[cfg(test)]
@@ -665,7 +769,7 @@ mod tests {
     fn run(action: Action, syntax: Syntax, text: &str, sel: Range<usize>) -> (String, String) {
         let edit = apply(action, syntax, text, sel);
         let out = edit.apply_to(text);
-        let selected = out[edit.selection.clone()].to_string();
+        let selected = out[edit.selection()].to_string();
         (out, selected)
     }
 
@@ -724,6 +828,71 @@ mod tests {
         assert_eq!(selected, "Fußnotentext");
     }
 
+    fn texts(out: &str, edit: &Edit) -> Vec<String> {
+        edit.placeholders.iter().map(|r| out[r.clone()].to_string()).collect()
+    }
+
+    #[test]
+    fn placeholders_in_tab_order() {
+        let edit = apply(Action::Table, Syntax::Markdown, "", 0..0);
+        assert_eq!(texts(&edit.apply_to(""), &edit), ["Spalte 1", "Spalte 2", "Wert", "Wert"]);
+        let edit = apply(Action::Table, Syntax::Typst, "", 0..0);
+        assert_eq!(texts(&edit.apply_to(""), &edit), ["Spalte 1", "Spalte 2", "Wert", "Wert"]);
+        let edit = apply(Action::Image, Syntax::Markdown, "Text", 4..4);
+        assert_eq!(texts(&edit.apply_to("Text"), &edit), ["bild.png", "Beschreibung"]);
+        let edit = apply(Action::Image, Syntax::Typst, "", 0..0);
+        assert_eq!(texts(&edit.apply_to(""), &edit), ["bild.png", "Beschreibung"]);
+        for syntax in [Syntax::Markdown, Syntax::Typst] {
+            let edit = apply(Action::Link, syntax, "", 0..0);
+            assert_eq!(texts(&edit.apply_to(""), &edit), ["Linktext", "https://"]);
+        }
+        let edit = apply(Action::CodeBlock, Syntax::Markdown, "", 0..0);
+        assert_eq!(texts(&edit.apply_to(""), &edit), ["text", "Code"]);
+    }
+
+    #[test]
+    fn tabstops_shift_after_typing_in_first_placeholder() {
+        let edit = apply(Action::Table, Syntax::Markdown, "", 0..0);
+        let text = edit.apply_to("");
+        let mut stops = Tabstops::new(edit.placeholders.clone(), text.clone()).unwrap();
+        // „Spalte 1“ durch „Name“ ersetzen: erst ein Zeichen, dann weitere.
+        let first = stops.current();
+        let mut typed = text.clone();
+        typed.replace_range(first.clone(), "N");
+        assert!(stops.sync(&typed, first.start + 1));
+        typed.insert_str(first.start + 1, "ame");
+        assert!(stops.sync(&typed, first.start + 4));
+        assert_eq!(&typed[stops.current()], "Name");
+        let second = stops.next_range().unwrap();
+        assert_eq!(&typed[second], "Spalte 2");
+        assert_eq!(&typed[stops.next_range().unwrap()], "Wert");
+        assert_eq!(&typed[stops.prev_range()], "Spalte 2");
+        stops.next_range();
+        assert_eq!(&typed[stops.next_range().unwrap()], "Wert");
+        assert_eq!(stops.next_range(), None);
+    }
+
+    #[test]
+    fn tabstops_handle_ambiguous_and_outside_edits() {
+        // Typst-Bild: Pfad leeren und „\"“ tippen – gleiches Zeichen wie dahinter.
+        let edit = apply(Action::Image, Syntax::Typst, "", 0..0);
+        let text = edit.apply_to("");
+        let mut stops = Tabstops::new(edit.placeholders.clone(), text.clone()).unwrap();
+        let path = stops.current();
+        let mut typed = text.clone();
+        typed.replace_range(path.clone(), "");
+        assert!(stops.sync(&typed, path.start));
+        typed.insert(path.start, '"');
+        assert!(stops.sync(&typed, path.start + 1));
+        assert_eq!(&typed[stops.current()], "\"");
+        assert_eq!(&typed[stops.next_range().unwrap()], "Beschreibung");
+        // Änderung außerhalb des aktuellen Platzhalters beendet den Modus.
+        typed.insert_str(0, "äö");
+        assert!(!stops.sync(&typed, 2));
+        // Ein einzelner Platzhalter braucht keinen Tab-Modus.
+        assert!(Tabstops::new(vec![Range { start: 0, end: 1 }], "x".into()).is_none());
+    }
+
     #[test]
     fn every_action_produces_valid_selection() {
         let samples = ["", "Text", "Zeile 1\nZeile 2\n", "äöü ß"];
@@ -733,7 +902,9 @@ mod tests {
                     for sel in [0..0, 0..text.len(), text.len()..text.len()] {
                         let edit = apply(action, syntax, text, sel);
                         let out = edit.apply_to(text);
-                        assert!(out.get(edit.selection.clone()).is_some(), "{action:?} {syntax:?} {text:?}");
+                        for range in &edit.placeholders {
+                            assert!(out.get(range.clone()).is_some(), "{action:?} {syntax:?} {text:?}");
+                        }
                     }
                 }
             }

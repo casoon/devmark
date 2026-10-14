@@ -11,7 +11,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use devmark_writing::authoring::{self, Action as Format, Syntax};
+use devmark_writing::authoring::{self, Action as Format, Syntax, Tabstops};
 use devmark_writing::templates::{DocInfo, DocType};
 use devmark_writing::{Options, compile_pdf, markdown_to_typst, render_pages};
 use gpui_kit::assets::{Assets, IconName as AssetIcon, icon_assets};
@@ -81,6 +81,9 @@ actions!(
         InsertRule,
         InsertPageBreak,
         InsertOutline,
+        NextPlaceholder,
+        PrevPlaceholder,
+        EndPlaceholders,
     ]
 );
 
@@ -178,6 +181,10 @@ struct Buffer {
     note_id: Option<String>,
     /// Anzeigename für Notizen (erste Zeile).
     title: Option<String>,
+    /// Schreibhilfe (nur Markdown/Typst), u. a. für übernommene `/`-Einfügungen.
+    assist: Option<Rc<WritingAssist>>,
+    /// Platzhalter der zuletzt eingefügten Vorlage, solange Tab sie anspringt.
+    tabstops: Option<Tabstops>,
 }
 
 impl Buffer {
@@ -440,6 +447,7 @@ impl Workspace {
         let language = language_for(&path);
         let syntax = Syntax::for_path(&path);
 
+        let mut buffer_assist = None;
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .language(language)
@@ -454,7 +462,8 @@ impl Workspace {
                 .soft_wrap(syntax.is_some());
             state.set_value(content, window, cx);
             if let Some(syntax) = syntax {
-                let assist = Rc::new(WritingAssist { syntax });
+                let assist = Rc::new(WritingAssist { syntax, offered: Default::default() });
+                buffer_assist = Some(assist.clone());
                 state.lsp_mut().completion_provider = Some(assist.clone());
                 state.lsp_mut().hover_provider = Some(assist);
             }
@@ -463,6 +472,7 @@ impl Workspace {
 
         let subscription = cx.subscribe(&editor, |this, editor, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
+                this.track_placeholders(&editor, cx);
                 let mut note_id = None;
                 if let Some(buffer) = this.buffer_for_editor(&editor) {
                     buffer.dirty = true;
@@ -493,6 +503,8 @@ impl Workspace {
             dirty: false,
             note_id,
             title,
+            assist: buffer_assist,
+            tabstops: None,
         });
         pane.active = pane.buffers.len() - 1;
         self.schedule_preview(Duration::ZERO, cx);
@@ -724,16 +736,96 @@ impl Workspace {
             );
             return;
         }
-        buffer.editor.clone().update(cx, |state, cx| {
+        let tabstops = buffer.editor.clone().update(cx, |state, cx| {
             let text = state.value().to_string();
             let edit = authoring::apply(action, syntax, &text, state.selected_range());
             for change in edit.changes.iter().rev() {
                 state.set_selected_range(change.range.clone(), cx);
                 state.replace(change.text.clone(), window, cx);
             }
-            state.set_selected_range(edit.selection, cx);
+            state.set_selected_range(edit.selection(), cx);
             state.focus(window, cx);
+            Tabstops::new(edit.placeholders, state.value().to_string())
         });
+        if let Some(buffer) = self.active_buffer_mut() {
+            buffer.tabstops = tabstops;
+        }
+    }
+
+    fn active_buffer_mut(&mut self) -> Option<&mut Buffer> {
+        let pane = &mut self.panes[self.active_pane];
+        pane.buffers.get_mut(pane.active)
+    }
+
+    // ---- Platzhalter (Tab springt weiter) ----
+
+    /// Führt die Platzhalter nach einer Eingabe nach; eine übernommene `/`-Einfügung aktiviert
+    /// sie und markiert den ersten.
+    fn track_placeholders(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
+        let Some(buffer) = self.buffer_for_editor(editor) else {
+            return;
+        };
+        let state = editor.read(cx);
+        let cursor = state.cursor();
+        if let Some(stops) = buffer.tabstops.as_mut() {
+            if !stops.sync(&state.value(), cursor) {
+                buffer.tabstops = None;
+            }
+            return;
+        }
+        let Some(placeholders) = buffer.assist.as_ref().and_then(|a| a.accepted_snippet(state.text(), cursor)) else {
+            return;
+        };
+        let first = placeholders[0].clone();
+        buffer.tabstops = Tabstops::new(placeholders, state.value().to_string());
+        editor.update(cx, |state, cx| state.set_selected_range(first, cx));
+    }
+
+    /// Tab/Shift-Tab: nächsten/vorigen Platzhalter markieren. Ohne aktive Platzhalter (oder
+    /// mit Cursor außerhalb der Vorlage) geht die Taste an den Editor (Einrücken).
+    fn jump_placeholder(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(buffer) = self.active_buffer_mut() else {
+            cx.propagate();
+            return;
+        };
+        let editor = buffer.editor.clone();
+        let state = editor.read(cx);
+        let focused = state.focus_handle(cx).is_focused(window);
+        let Some(stops) = buffer.tabstops.as_mut().filter(|s| focused && s.contains(state.cursor())) else {
+            buffer.tabstops = None;
+            cx.propagate();
+            return;
+        };
+        let target = if forward { stops.next_range() } else { Some(stops.prev_range()) };
+        let target = match target {
+            Some(target) => target,
+            None => {
+                // Nach dem letzten Platzhalter: ans Zeilenende, Modus beenden.
+                let end = stops.current().end;
+                let text = state.value();
+                let end = text[end..].find('\n').map_or(text.len(), |i| end + i);
+                buffer.tabstops = None;
+                end..end
+            }
+        };
+        editor.update(cx, |state, cx| state.set_selected_range(target, cx));
+    }
+
+    fn next_placeholder(&mut self, _: &NextPlaceholder, window: &mut Window, cx: &mut Context<Self>) {
+        self.jump_placeholder(true, window, cx);
+    }
+
+    fn prev_placeholder(&mut self, _: &PrevPlaceholder, window: &mut Window, cx: &mut Context<Self>) {
+        self.jump_placeholder(false, window, cx);
+    }
+
+    /// Esc beendet den Platzhalter-Modus; der Editor bekommt die Taste trotzdem (z. B. um die
+    /// Vorschlagsliste zu schließen).
+    fn end_placeholders(&mut self, _: &EndPlaceholders, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(buffer) = self.active_buffer_mut() {
+            buffer.tabstops = None;
+        }
+        cx.propagate();
     }
 
     // ---- Neues Dokument ----
@@ -1475,7 +1567,10 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::disable_sync))
             .on_action(cx.listener(Self::new_document))
             .on_action(cx.listener(Self::export_typst))
-            .on_action(cx.listener(Self::export_pdf));
+            .on_action(cx.listener(Self::export_pdf))
+            .on_action(cx.listener(Self::next_placeholder))
+            .on_action(cx.listener(Self::prev_placeholder))
+            .on_action(cx.listener(Self::end_placeholders));
         let root = format_actions!(root, cx, {
             FormatBold => Format::Bold,
             FormatItalic => Format::Italic,
@@ -1734,6 +1829,11 @@ fn main() {
             KeyBinding::new("secondary-shift-7", NumberedList, None),
             KeyBinding::new("secondary-shift-9", TaskList, None),
             KeyBinding::new("secondary-shift-.", QuoteBlock, None),
+            // Im Editor-Kontext „Input“ von gpui-kit; später gebunden = Vorrang vor dessen
+            // Einrücken/Escape. Ohne aktive Platzhalter reichen die Handler die Taste weiter.
+            KeyBinding::new("tab", NextPlaceholder, Some("Input")),
+            KeyBinding::new("shift-tab", PrevPlaceholder, Some("Input")),
+            KeyBinding::new("escape", EndPlaceholders, Some("Input")),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.set_menus([
