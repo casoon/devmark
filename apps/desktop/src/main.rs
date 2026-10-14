@@ -17,7 +17,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 
-actions!(devmark, [Save, ToggleSplit, CloseTab, Quit]);
+actions!(devmark, [Open, Save, ToggleSplit, CloseTab, Quit]);
 
 const IGNORED_DIRS: &[&str] = &[".git", "target", "node_modules", "build", ".dart_tool"];
 
@@ -39,16 +39,25 @@ struct Workspace {
     panes: Vec<Pane>,
     active_pane: usize,
     split: bool,
+    focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Workspace {
-    fn new(root: PathBuf, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(root: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let tree_state = cx.new(|cx| TreeState::new(cx));
         let items = build_file_items(&root);
         tree_state.update(cx, |state, cx| state.set_items(items, cx));
 
+        // Fokus auf dem Workspace, damit Menü-Aktionen auch ohne offene Datei ankommen.
+        let focus_handle = cx.focus_handle();
+        window.defer(cx, {
+            let focus_handle = focus_handle.clone();
+            move |window, cx| focus_handle.focus(window, cx)
+        });
+
         Self {
+            focus_handle,
             root,
             tree_state,
             panes: vec![Pane::default(), Pane::default()],
@@ -56,6 +65,41 @@ impl Workspace {
             split: false,
             _subscriptions: Vec::new(),
         }
+    }
+
+    fn open(&mut self, _: &Open, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: true,
+            multiple: false,
+            prompt: Some("Öffnen".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = paths.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| {
+                if path.is_dir() {
+                    this.set_root(path, window, cx);
+                } else {
+                    this.open_file(path, window, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn set_root(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let items = build_file_items(&root);
+        self.tree_state
+            .update(cx, |state, cx| state.set_items(items, cx));
+        window.set_window_title(&window_title(&root));
+        self.root = root;
+        cx.notify();
     }
 
     fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -275,9 +319,11 @@ impl Render for Workspace {
 
         v_flex()
             .id("workspace")
+            .track_focus(&self.focus_handle)
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .on_action(cx.listener(Self::open))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::toggle_split))
@@ -294,13 +340,13 @@ impl Render for Workspace {
             )
             .child(
                 StatusBar::new().left(status).right(
-                    Button::new("split")
-                        .ghost()
-                        .xsmall()
-                        .label(if self.split { "Split aus" } else { "Split" })
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.toggle_split(&ToggleSplit, window, cx)
-                        })),
+                        Button::new("split")
+                            .ghost()
+                            .xsmall()
+                            .label(if self.split { "Split aus" } else { "Split" })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_split(&ToggleSplit, window, cx)
+                            })),
                 ),
             )
     }
@@ -319,6 +365,13 @@ fn language_for(path: &Path) -> String {
         ext => ext,
     }
     .to_string()
+}
+
+fn window_title(root: &Path) -> String {
+    format!(
+        "DevMark – {}",
+        root.file_name().unwrap_or_default().to_string_lossy()
+    )
 }
 
 fn build_file_items(dir: &Path) -> Vec<TreeItem> {
@@ -357,18 +410,26 @@ fn main() {
     gpui_kit::application().with_assets(Assets).run(move |cx| {
         gpui_kit::init(cx);
         cx.bind_keys([
+            KeyBinding::new("secondary-o", Open, None),
             KeyBinding::new("secondary-s", Save, None),
             KeyBinding::new("secondary-w", CloseTab, None),
             KeyBinding::new("secondary-\\", ToggleSplit, None),
             KeyBinding::new("secondary-q", Quit, None),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.set_menus([
+            Menu::new("DevMark").items([MenuItem::action("DevMark beenden", Quit)]),
+            Menu::new("Datei").items([
+                MenuItem::action("Öffnen …", Open),
+                MenuItem::separator(),
+                MenuItem::action("Speichern", Save),
+                MenuItem::action("Tab schließen", CloseTab),
+            ]),
+            Menu::new("Ansicht").items([MenuItem::action("Split umschalten", ToggleSplit)]),
+        ]);
         cx.activate(true);
 
-        let title = format!(
-            "DevMark – {}",
-            root.file_name().unwrap_or_default().to_string_lossy()
-        );
+        let title = window_title(&root);
         let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
         gpui_kit::open_window(
             WindowOptions {
