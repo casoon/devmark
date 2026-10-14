@@ -1,13 +1,20 @@
-//! Phase-1-Spike: Dateibaum, Editor mit Tree-sitter-Highlighting, Tabs, Split, Speichern.
+//! DevMark: Dateibaum, Editor mit Tree-sitter-Highlighting, Tabs, Split, Speichern;
+//! Schreibhilfen für Markdown/Typst und Export nach Typst/PDF.
+
+mod assist;
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
-use gpui_kit::assets::Assets;
+use devmark_writing::authoring::{self, Action as Format, Syntax};
+use devmark_writing::templates::{DocInfo, DocType};
+use devmark_writing::{Options, compile_pdf, markdown_to_typst};
+use gpui_kit::assets::{Assets, IconName as AssetIcon, icon_assets};
 use gpui_kit::component::{
-    ActiveTheme, IconName, Sizable, WindowExt,
+    ActiveTheme, IconName, Selectable, Sizable, WindowExt,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Editor, EditorState, InputEvent, TabSize},
+    input::{Editor, EditorState, Input, InputEvent, InputState, TabSize},
     list::ListItem,
     notification::Notification,
     resizable::{h_resizable, resizable_panel},
@@ -18,13 +25,131 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 
-actions!(devmark, [Open, Save, ToggleSplit, CloseTab, Quit]);
+use crate::assist::WritingAssist;
+
+actions!(
+    devmark,
+    [
+        Open,
+        Save,
+        ToggleSplit,
+        CloseTab,
+        Quit,
+        NewDocument,
+        ExportTypst,
+        ExportPdf,
+        ToggleHelp,
+        FormatBold,
+        FormatItalic,
+        FormatStrike,
+        FormatCode,
+        InsertLink,
+        Heading1,
+        Heading2,
+        Heading3,
+        BulletList,
+        NumberedList,
+        TaskList,
+        QuoteBlock,
+        InsertImage,
+        InsertTable,
+        InsertCodeBlock,
+        InsertFootnote,
+        InsertCallout,
+        InsertMath,
+        InsertMathBlock,
+        InsertRule,
+        InsertPageBreak,
+        InsertOutline,
+    ]
+);
+
+// Zusätzliche Icons für die Formatleiste (Standard-Assets enthalten nur Basis-Icons).
+icon_assets!(
+    WritingIcons,
+    [
+        Bold,
+        Italic,
+        Strikethrough,
+        Code,
+        Link,
+        Heading1,
+        Heading2,
+        Heading3,
+        List,
+        ListOrdered,
+        ListTodo,
+        TextQuote,
+        Image,
+        Table,
+        SquareCode,
+        Footprints,
+        MessageSquareWarning,
+        Radical,
+        Sigma,
+        SeparatorHorizontal,
+        FileDown,
+        TableOfContents,
+        CircleQuestionMark,
+        FilePlus,
+        Printer,
+        FileType,
+    ]
+);
+
+struct AppAssets;
+
+impl AssetSource for AppAssets {
+    fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        if let Some(bytes) = WritingIcons.load(path)? {
+            return Ok(Some(bytes));
+        }
+        Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        let mut paths = Assets.list(path)?;
+        paths.extend(WritingIcons.list(path)?);
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+}
+
+/// Formatleiste: Aktion, Icon, UI-Action (für Tastenkürzel im Tooltip).
+fn format_entries() -> Vec<(Format, AssetIcon, Box<dyn gpui_kit::Action>)> {
+    vec![
+        (Format::Heading(1), AssetIcon::Heading1, Box::new(Heading1)),
+        (Format::Heading(2), AssetIcon::Heading2, Box::new(Heading2)),
+        (Format::Heading(3), AssetIcon::Heading3, Box::new(Heading3)),
+        (Format::Bold, AssetIcon::Bold, Box::new(FormatBold)),
+        (Format::Italic, AssetIcon::Italic, Box::new(FormatItalic)),
+        (Format::Strike, AssetIcon::Strikethrough, Box::new(FormatStrike)),
+        (Format::Code, AssetIcon::Code, Box::new(FormatCode)),
+        (Format::Link, AssetIcon::Link, Box::new(InsertLink)),
+        (Format::BulletList, AssetIcon::List, Box::new(BulletList)),
+        (Format::NumberedList, AssetIcon::ListOrdered, Box::new(NumberedList)),
+        (Format::TaskList, AssetIcon::ListTodo, Box::new(TaskList)),
+        (Format::Quote, AssetIcon::TextQuote, Box::new(QuoteBlock)),
+        (Format::Image, AssetIcon::Image, Box::new(InsertImage)),
+        (Format::Table, AssetIcon::Table, Box::new(InsertTable)),
+        (Format::CodeBlock, AssetIcon::SquareCode, Box::new(InsertCodeBlock)),
+        (Format::Footnote, AssetIcon::Footprints, Box::new(InsertFootnote)),
+        (Format::Callout, AssetIcon::MessageSquareWarning, Box::new(InsertCallout)),
+        (Format::MathInline, AssetIcon::Radical, Box::new(InsertMath)),
+        (Format::MathBlock, AssetIcon::Sigma, Box::new(InsertMathBlock)),
+        (Format::Rule, AssetIcon::SeparatorHorizontal, Box::new(InsertRule)),
+        (Format::PageBreak, AssetIcon::FileDown, Box::new(InsertPageBreak)),
+        (Format::Outline, AssetIcon::TableOfContents, Box::new(InsertOutline)),
+    ]
+}
 
 const IGNORED_DIRS: &[&str] = &[".git", "target", "node_modules", "build", ".dart_tool"];
 
 struct Buffer {
     path: PathBuf,
     editor: Entity<EditorState>,
+    syntax: Option<Syntax>,
     dirty: bool,
 }
 
@@ -34,12 +159,22 @@ struct Pane {
     active: usize,
 }
 
+/// Formular „Neues Dokument“: Dokumenttyp, Format, Titel, Autor.
+struct NewDocForm {
+    doc_type: DocType,
+    syntax: Syntax,
+    title: Entity<InputState>,
+    author: Entity<InputState>,
+}
+
 struct Workspace {
     root: PathBuf,
     tree_state: Entity<TreeState>,
     panes: Vec<Pane>,
     active_pane: usize,
     split: bool,
+    show_help: bool,
+    new_doc: Option<NewDocForm>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -72,6 +207,8 @@ impl Workspace {
             panes: vec![Pane::default(), Pane::default()],
             active_pane: 0,
             split: false,
+            show_help: false,
+            new_doc: None,
             _subscriptions: Vec::new(),
         }
     }
@@ -103,15 +240,20 @@ impl Workspace {
     }
 
     fn set_root(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        let items = build_file_items(&root);
-        self.tree_state
-            .update(cx, |state, cx| state.set_items(items, cx));
         window.set_window_title(&window_title(&root));
         self.root = root;
+        self.refresh_tree(cx);
+    }
+
+    fn refresh_tree(&mut self, cx: &mut Context<Self>) {
+        let items = build_file_items(&self.root);
+        self.tree_state
+            .update(cx, |state, cx| state.set_items(items, cx));
         cx.notify();
     }
 
     fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_doc = None;
         let pane_ix = self.active_pane;
         if let Some(ix) = self.panes[pane_ix].buffers.iter().position(|b| b.path == path) {
             self.panes[pane_ix].active = ix;
@@ -133,6 +275,7 @@ impl Workspace {
             }
         };
         let language = language_for(&path);
+        let syntax = Syntax::for_path(&path);
 
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
@@ -143,8 +286,14 @@ impl Workspace {
                     tab_size: 4,
                     hard_tabs: false,
                 })
-                .soft_wrap(false);
+                // Fließtext umbrechen, Quelltext nicht.
+                .soft_wrap(syntax.is_some());
             state.set_value(content, window, cx);
+            if let Some(syntax) = syntax {
+                let assist = Rc::new(WritingAssist { syntax });
+                state.lsp_mut().completion_provider = Some(assist.clone());
+                state.lsp_mut().hover_provider = Some(assist);
+            }
             state
         });
 
@@ -164,6 +313,7 @@ impl Workspace {
         pane.buffers.push(Buffer {
             path,
             editor,
+            syntax,
             dirty: false,
         });
         pane.active = pane.buffers.len() - 1;
@@ -202,6 +352,10 @@ impl Workspace {
     }
 
     fn close_tab(&mut self, _: &CloseTab, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.new_doc.take().is_some() {
+            cx.notify();
+            return;
+        }
         let pane = &mut self.panes[self.active_pane];
         if pane.buffers.is_empty() {
             return;
@@ -218,6 +372,226 @@ impl Workspace {
         }
         cx.notify();
     }
+
+    fn toggle_help(&mut self, _: &ToggleHelp, _window: &mut Window, cx: &mut Context<Self>) {
+        self.show_help = !self.show_help;
+        cx.notify();
+    }
+
+    // ---- Formatieren ----
+
+    /// Wendet eine Formatier-/Einfügeaktion auf die aktive Markdown-/Typst-Datei an.
+    fn format(&mut self, action: Format, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(buffer) = self.active_buffer() else {
+            return;
+        };
+        let Some(syntax) = buffer.syntax else {
+            window.push_notification(
+                Notification::info("Formatierhilfen gibt es für Markdown- und Typst-Dateien."),
+                cx,
+            );
+            return;
+        };
+        if !action.available(syntax) {
+            window.push_notification(
+                Notification::info(format!("„{}“ gibt es in {} nicht.", action.label(), syntax.name())),
+                cx,
+            );
+            return;
+        }
+        buffer.editor.clone().update(cx, |state, cx| {
+            let text = state.value().to_string();
+            let edit = authoring::apply(action, syntax, &text, state.selected_range());
+            for change in edit.changes.iter().rev() {
+                state.set_selected_range(change.range.clone(), cx);
+                state.replace(change.text.clone(), window, cx);
+            }
+            state.set_selected_range(edit.selection, cx);
+            state.focus(window, cx);
+        });
+    }
+
+    // ---- Neues Dokument ----
+
+    fn new_document(&mut self, _: &NewDocument, window: &mut Window, cx: &mut Context<Self>) {
+        let title = cx.new(|cx| InputState::new(window, cx).placeholder("Titel des Dokuments"));
+        let author = cx.new(|cx| InputState::new(window, cx).placeholder("Autor (optional)"));
+        title.update(cx, |state, cx| state.focus(window, cx));
+        self.new_doc = Some(NewDocForm {
+            doc_type: DocType::Article,
+            syntax: Syntax::Markdown,
+            title,
+            author,
+        });
+        cx.notify();
+    }
+
+    fn create_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = self.new_doc.as_ref() else {
+            return;
+        };
+        let info = DocInfo {
+            title: form.title.read(cx).value().to_string(),
+            author: form.author.read(cx).value().to_string(),
+            date: today(),
+            lang: "de".into(),
+        };
+        let extension = match form.syntax {
+            Syntax::Markdown => "md",
+            Syntax::Typst => "typ",
+        };
+        let stem = form.doc_type.file_stem(&info);
+        let mut path = self.root.join(format!("{stem}.{extension}"));
+        let mut n = 2;
+        while path.exists() {
+            path = self.root.join(format!("{stem}-{n}.{extension}"));
+            n += 1;
+        }
+        let content = form.doc_type.render(form.syntax, &info);
+        if let Err(err) = std::fs::write(&path, content) {
+            window.push_notification(
+                Notification::error(format!("Dokument konnte nicht angelegt werden: {err}")),
+                cx,
+            );
+            return;
+        }
+        self.new_doc = None;
+        self.refresh_tree(cx);
+        self.open_file(path, window, cx);
+    }
+
+    // ---- Export ----
+
+    fn export_typst(&mut self, _: &ExportTypst, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(buffer) = self.active_buffer() else {
+            return;
+        };
+        if buffer.syntax != Some(Syntax::Markdown) {
+            window.push_notification(
+                Notification::info("Nach Typst umwandeln geht für Markdown-Dateien (.md, .mdx)."),
+                cx,
+            );
+            return;
+        }
+        let source = buffer.editor.read(cx).value().to_string();
+        let path = buffer.path.clone();
+        let target = path.with_extension("typ");
+        if target.exists() && !generated_by_devmark(&target) {
+            window.push_notification(
+                Notification::error(format!(
+                    "„{}“ existiert bereits und wurde nicht von DevMark erzeugt – nicht überschrieben.",
+                    file_name(&target)
+                )),
+                cx,
+            );
+            return;
+        }
+        let conversion = markdown_to_typst(&source, &Options::for_file(&path));
+        if let Err(err) = std::fs::write(&target, &conversion.typst) {
+            window.push_notification(
+                Notification::error(format!("„{}“ konnte nicht geschrieben werden: {err}", file_name(&target))),
+                cx,
+            );
+            return;
+        }
+        let message = if conversion.warnings.is_empty() {
+            format!("Nach „{}“ umgewandelt.", file_name(&target))
+        } else {
+            format!(
+                "Nach „{}“ umgewandelt. Hinweise:\n• {}",
+                file_name(&target),
+                conversion.warnings.iter().take(5).cloned().collect::<Vec<_>>().join("\n• ")
+            )
+        };
+        window.push_notification(Notification::success(message), cx);
+        self.refresh_tree(cx);
+        self.reload_or_open(target, conversion.typst, window, cx);
+    }
+
+    /// Öffnet `path`; ist die Datei schon offen, wird ihr Inhalt ersetzt.
+    fn reload_or_open(&mut self, path: PathBuf, content: String, window: &mut Window, cx: &mut Context<Self>) {
+        for buffer in self.panes.iter().flat_map(|pane| pane.buffers.iter()) {
+            if buffer.path == path {
+                buffer.editor.update(cx, |state, cx| state.set_value(content.clone(), window, cx));
+            }
+        }
+        // Die Änderungsmeldung kommt verzögert; der Inhalt entspricht aber der Datei.
+        cx.defer_in(window, {
+            let path = path.clone();
+            move |this, _window, cx| {
+                for buffer in this.panes.iter_mut().flat_map(|pane| pane.buffers.iter_mut()) {
+                    if buffer.path == path {
+                        buffer.dirty = false;
+                    }
+                }
+                cx.notify();
+            }
+        });
+        self.open_file(path, window, cx);
+    }
+
+    fn export_pdf(&mut self, _: &ExportPdf, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(buffer) = self.active_buffer() else {
+            return;
+        };
+        let Some(syntax) = buffer.syntax else {
+            window.push_notification(
+                Notification::info("PDF-Export gibt es für Markdown- und Typst-Dateien."),
+                cx,
+            );
+            return;
+        };
+        let source = buffer.editor.read(cx).value().to_string();
+        let path = buffer.path.clone();
+        let pdf_path = path.with_extension("pdf");
+        window.push_notification(Notification::info(format!("„{}“ wird erstellt …", file_name(&pdf_path))), cx);
+
+        let task = cx.background_spawn({
+            let pdf_path = pdf_path.clone();
+            async move {
+                let (typst, main_path) = match syntax {
+                    Syntax::Markdown => (
+                        markdown_to_typst(&source, &Options::for_file(&path)).typst,
+                        path.with_extension("typ"),
+                    ),
+                    Syntax::Typst => (source, path),
+                };
+                let compiled = compile_pdf(&typst, &main_path).map_err(|err| err.to_string())?;
+                std::fs::write(&pdf_path, &compiled.pdf).map_err(|err| err.to_string())?;
+                Ok::<usize, String>(compiled.pages)
+            }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(pages) => {
+                        window.push_notification(
+                            Notification::success(format!(
+                                "„{}“ erstellt ({pages} {}).",
+                                file_name(&pdf_path),
+                                if pages == 1 { "Seite" } else { "Seiten" }
+                            )),
+                            cx,
+                        );
+                        cx.open_with_system(&pdf_path);
+                        this.refresh_tree(cx);
+                    }
+                    Err(err) => {
+                        let first: Vec<&str> = err.lines().take(6).collect();
+                        window.push_notification(
+                            Notification::error(format!("PDF-Export fehlgeschlagen:\n{}", first.join("\n"))),
+                            cx,
+                        );
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    // ---- Darstellung ----
 
     fn render_file_tree(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
@@ -256,6 +630,236 @@ impl Workspace {
         .h_full()
     }
 
+    /// Formatleiste über Markdown-/Typst-Dateien.
+    fn render_toolbar(&self, syntax: Syntax, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut bar = h_flex()
+            .id("format-toolbar")
+            .w_full()
+            .flex_wrap()
+            .gap_0p5()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(cx.theme().border);
+        let mut last_group = None;
+        for (ix, (action, icon, ui_action)) in format_entries().into_iter().enumerate() {
+            if !action.available(syntax) {
+                continue;
+            }
+            if last_group.is_some_and(|group| group != action.group()) {
+                bar = bar.child(div().w(px(1.)).h(px(16.)).mx_1().bg(cx.theme().border));
+            }
+            last_group = Some(action.group());
+            let tooltip = format!("{} – {}", action.label(), action.description());
+            bar = bar.child(
+                Button::new(("format", ix))
+                    .ghost()
+                    .xsmall()
+                    .icon(icon)
+                    .tooltip_with_action(tooltip, ui_action.as_ref(), None)
+                    .on_click(cx.listener(move |this, _, window, cx| this.format(action, window, cx))),
+            );
+        }
+        bar = bar.child(div().flex_1());
+        if syntax == Syntax::Markdown {
+            bar = bar.child(
+                Button::new("export-typst")
+                    .ghost()
+                    .xsmall()
+                    .icon(AssetIcon::FileType)
+                    .label("Typst")
+                    .tooltip_with_action("Nach Typst umwandeln (.typ neben der Datei)", &ExportTypst, None)
+                    .on_click(cx.listener(|this, _, window, cx| this.export_typst(&ExportTypst, window, cx))),
+            );
+        }
+        bar.child(
+            Button::new("export-pdf")
+                .ghost()
+                .xsmall()
+                .icon(AssetIcon::Printer)
+                .label("PDF")
+                .tooltip_with_action("Als PDF exportieren und öffnen", &ExportPdf, None)
+                .on_click(cx.listener(|this, _, window, cx| this.export_pdf(&ExportPdf, window, cx))),
+        )
+        .child(
+            Button::new("help")
+                .ghost()
+                .xsmall()
+                .icon(AssetIcon::CircleQuestionMark)
+                .selected(self.show_help)
+                .tooltip_with_action("Spickzettel ein-/ausblenden", &ToggleHelp, None)
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_help(&ToggleHelp, window, cx))),
+        )
+    }
+
+    /// Spickzettel: alle Elemente mit Erklärung, Beispiel und „Einfügen“.
+    fn render_help(&self, syntax: Syntax, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut list = v_flex()
+            .id("help-panel")
+            .size_full()
+            .overflow_y_scroll()
+            .p_3()
+            .gap_3()
+            .bg(cx.theme().sidebar)
+            .text_sm()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(div().font_weight(FontWeight::BOLD).child(format!("Spickzettel {}", syntax.name())))
+                    .child(
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Tipp: „/“ am Zeilenanfang öffnet die Einfüge-Liste. Mauszeiger auf Syntax zeigt eine Erklärung."),
+                    ),
+            );
+        for (ix, &action) in Format::ALL.iter().enumerate() {
+            if !action.available(syntax) {
+                continue;
+            }
+            list = list.child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(action.label()))
+                            .child(
+                                Button::new(("help-insert", ix))
+                                    .xsmall()
+                                    .outline()
+                                    .label("Einfügen")
+                                    .on_click(cx.listener(move |this, _, window, cx| this.format(action, window, cx))),
+                            ),
+                    )
+                    .child(div().text_color(cx.theme().muted_foreground).child(action.description()))
+                    .child(
+                        div()
+                            .p_2()
+                            .rounded(cx.theme().radius)
+                            .bg(cx.theme().background)
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_xs()
+                            .whitespace_normal()
+                            .child(action.example(syntax)),
+                    ),
+            );
+        }
+        if syntax == Syntax::Markdown {
+            list = list.child(
+                div()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Für den Druck: „PDF“ setzt das Dokument mit Typst. „Typst“ erzeugt eine .typ-Datei zum Weiterbearbeiten."),
+            );
+        }
+        list
+    }
+
+    fn render_new_document(&self, form: &NewDocForm, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut types = v_flex().gap_1();
+        for (ix, &doc_type) in DocType::ALL.iter().enumerate() {
+            let selected = form.doc_type == doc_type;
+            types = types.child(
+                div()
+                    .id(("doc-type", ix))
+                    // Auswahlliste für Screenreader und Bedienungshilfen.
+                    .role(Role::RadioButton)
+                    .aria_label(doc_type.label())
+                    .aria_description(doc_type.description())
+                    .aria_toggled(if selected { Toggled::True } else { Toggled::False })
+                    .aria_position_in_set(ix + 1)
+                    .aria_size_of_set(DocType::ALL.len())
+                    .rounded(cx.theme().radius)
+                    .px_3()
+                    .py_2()
+                    .cursor_pointer()
+                    .border_1()
+                    .border_color(if selected { cx.theme().primary } else { cx.theme().transparent })
+                    .bg(if selected { cx.theme().accent } else { cx.theme().transparent })
+                    .hover(|this| this.bg(cx.theme().accent))
+                    .child(
+                        v_flex()
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(doc_type.label()))
+                            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(doc_type.description())),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(form) = this.new_doc.as_mut() {
+                            form.doc_type = doc_type;
+                            cx.notify();
+                        }
+                    })),
+            );
+        }
+        let syntax_button = |syntax: Syntax, hint: &'static str| {
+            Button::new(syntax.name())
+                .small()
+                .label(format!("{} – {hint}", syntax.name()))
+                .selected(form.syntax == syntax)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(form) = this.new_doc.as_mut() {
+                        form.syntax = syntax;
+                        cx.notify();
+                    }
+                }))
+        };
+        v_flex()
+            .id("new-document")
+            .size_full()
+            .overflow_y_scroll()
+            .p_6()
+            .gap_4()
+            .max_w(px(640.))
+            .child(div().text_xl().font_weight(FontWeight::BOLD).child("Neues Dokument"))
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Dokumenttyp"))
+                    .child(types),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Format"))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(syntax_button(Syntax::Markdown, "einfach, überall lesbar"))
+                            .child(syntax_button(Syntax::Typst, "voller Satz für den Druck")),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Angaben"))
+                    .child(Input::new(&form.title))
+                    .child(Input::new(&form.author)),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("create-document")
+                            .primary()
+                            .label("Anlegen")
+                            .on_click(cx.listener(|this, _, window, cx| this.create_document(window, cx))),
+                    )
+                    .child(
+                        Button::new("cancel-document")
+                            .ghost()
+                            .label("Abbrechen")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.new_doc = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("Die Datei wird in „{}“ angelegt.", self.root.display())),
+            )
+    }
+
     fn render_pane(&self, pane_ix: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let pane = &self.panes[pane_ix];
         let tabs = pane.buffers.iter().map(|buffer| {
@@ -273,25 +877,44 @@ impl Workspace {
                 view.update(cx, |this, cx| {
                     this.active_pane = pane_ix;
                     this.panes[pane_ix].active = ix;
+                    this.new_doc = None;
                     cx.notify();
                 });
             });
 
-        let body = match pane.buffers.get(pane.active) {
-            Some(buffer) => Editor::new(&buffer.editor)
-                .bordered(false)
-                .p_0()
-                .h_full()
-                .font_family(cx.theme().mono_font_family.clone())
-                .text_size(cx.theme().mono_font_size)
-                .into_any_element(),
-            None => div()
+        let new_doc_here = pane_ix == self.active_pane && self.new_doc.is_some();
+        let body = match (self.new_doc.as_ref().filter(|_| new_doc_here), pane.buffers.get(pane.active)) {
+            (Some(form), _) => self.render_new_document(form, cx).into_any_element(),
+            (None, Some(buffer)) => {
+                let editor = Editor::new(&buffer.editor)
+                    .bordered(false)
+                    .p_0()
+                    .h_full()
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .text_size(cx.theme().mono_font_size);
+                match buffer.syntax {
+                    Some(syntax) => v_flex()
+                        .size_full()
+                        .child(self.render_toolbar(syntax, cx))
+                        .child(div().flex_1().min_h_0().child(editor))
+                        .into_any_element(),
+                    None => editor.into_any_element(),
+                }
+            }
+            (None, None) => v_flex()
                 .size_full()
-                .flex()
                 .items_center()
                 .justify_center()
+                .gap_3()
                 .text_color(cx.theme().muted_foreground)
                 .child("Datei im Baum auswählen")
+                .child(
+                    Button::new(("new-doc-empty", pane_ix))
+                        .outline()
+                        .icon(AssetIcon::FilePlus)
+                        .label("Neues Dokument …")
+                        .on_click(cx.listener(|this, _, window, cx| this.new_document(&NewDocument, window, cx))),
+                )
                 .into_any_element(),
         };
 
@@ -312,6 +935,13 @@ impl Workspace {
     }
 }
 
+/// Registriert die Formatier-Actions auf dem Workspace-Element.
+macro_rules! format_actions {
+    ($element:expr, $cx:expr, { $($action:ty => $format:expr),* $(,)? }) => {
+        $element$(.on_action($cx.listener(|this, _: &$action, window, cx| this.format($format, window, cx))))*
+    };
+}
+
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let editors = if self.split {
@@ -323,18 +953,31 @@ impl Render for Workspace {
             self.render_pane(0, cx).into_any_element()
         };
 
+        let active_syntax = self.active_buffer().and_then(|b| b.syntax);
+        let main = match active_syntax.filter(|_| self.show_help) {
+            Some(syntax) => h_resizable("help-split")
+                .child(resizable_panel().child(editors))
+                .child(
+                    resizable_panel()
+                        .size(px(320.))
+                        .child(self.render_help(syntax, cx)),
+                )
+                .into_any_element(),
+            None => editors,
+        };
+
         let status = self
             .active_buffer()
             .map(|b| {
-                b.path
-                    .strip_prefix(&self.root)
-                    .unwrap_or(&b.path)
-                    .display()
-                    .to_string()
+                let path = b.path.strip_prefix(&self.root).unwrap_or(&b.path).display().to_string();
+                match b.syntax {
+                    Some(syntax) => format!("{path} · {}", syntax.name()),
+                    None => path,
+                }
             })
             .unwrap_or_default();
 
-        v_flex()
+        let root = v_flex()
             .id("workspace")
             .track_focus(&self.focus_handle)
             .size_full()
@@ -344,19 +987,61 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::toggle_split))
-            .child(
-                div().flex_1().min_h_0().child(
-                    h_resizable("workspace-split")
-                        .child(
-                            resizable_panel()
-                                .size(px(240.))
-                                .child(self.render_file_tree(cx)),
-                        )
-                        .child(resizable_panel().child(editors)),
-                ),
-            )
-            .child(
-                StatusBar::new().left(status).right(
+            .on_action(cx.listener(Self::toggle_help))
+            .on_action(cx.listener(Self::new_document))
+            .on_action(cx.listener(Self::export_typst))
+            .on_action(cx.listener(Self::export_pdf));
+        let root = format_actions!(root, cx, {
+            FormatBold => Format::Bold,
+            FormatItalic => Format::Italic,
+            FormatStrike => Format::Strike,
+            FormatCode => Format::Code,
+            InsertLink => Format::Link,
+            Heading1 => Format::Heading(1),
+            Heading2 => Format::Heading(2),
+            Heading3 => Format::Heading(3),
+            BulletList => Format::BulletList,
+            NumberedList => Format::NumberedList,
+            TaskList => Format::TaskList,
+            QuoteBlock => Format::Quote,
+            InsertImage => Format::Image,
+            InsertTable => Format::Table,
+            InsertCodeBlock => Format::CodeBlock,
+            InsertFootnote => Format::Footnote,
+            InsertCallout => Format::Callout,
+            InsertMath => Format::MathInline,
+            InsertMathBlock => Format::MathBlock,
+            InsertRule => Format::Rule,
+            InsertPageBreak => Format::PageBreak,
+            InsertOutline => Format::Outline,
+        });
+
+        root.child(
+            div().flex_1().min_h_0().child(
+                h_resizable("workspace-split")
+                    .child(
+                        resizable_panel()
+                            .size(px(240.))
+                            .child(self.render_file_tree(cx)),
+                    )
+                    .child(resizable_panel().child(main)),
+            ),
+        )
+        .child(
+            StatusBar::new().left(status).right(
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Button::new("new-doc")
+                            .ghost()
+                            .xsmall()
+                            .label("Neu …")
+                            .tooltip_with_action("Neues Dokument aus Vorlage", &NewDocument, None)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.new_document(&NewDocument, window, cx)
+                            })),
+                    )
+                    .child(
                         Button::new("split")
                             .ghost()
                             .xsmall()
@@ -364,8 +1049,9 @@ impl Render for Workspace {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_split(&ToggleSplit, window, cx)
                             })),
-                ),
-            )
+                    ),
+            ),
+        )
     }
 }
 
@@ -388,6 +1074,31 @@ fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default()
+}
+
+/// Von DevMark erzeugte .typ-Dateien dürfen beim erneuten Umwandeln überschrieben werden.
+fn generated_by_devmark(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .map(|content| content.lines().next().is_some_and(|line| line.contains("mit DevMark erzeugt")))
+        .unwrap_or(false)
+}
+
+fn today() -> String {
+    let days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() / 86_400)
+        .unwrap_or(0) as i64;
+    // Tage seit 1970 → Datum (Howard Hinnant).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 fn window_title(root: &Path) -> String {
@@ -425,10 +1136,11 @@ fn build_file_items(dir: &Path) -> Vec<TreeItem> {
 
 fn main() {
     // Argument: Ordner (wird Wurzel) oder Datei (Elternordner wird Wurzel, Datei wird geöffnet).
+    // Ohne Argument (z. B. aus dem Finder gestartet): Dokumente-Ordner statt „/“.
     let arg = std::env::args()
         .nth(1)
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().expect("current dir"));
+        .unwrap_or_else(default_root);
     let arg = arg.canonicalize().unwrap_or(arg);
     let (root, file) = if arg.is_file() {
         let parent = arg.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -437,25 +1149,78 @@ fn main() {
         (arg, None)
     };
 
-    gpui_kit::application().with_assets(Assets).run(move |cx| {
+    gpui_kit::application().with_assets(AppAssets).run(move |cx| {
         gpui_kit::init(cx);
         cx.bind_keys([
             KeyBinding::new("secondary-o", Open, None),
+            KeyBinding::new("secondary-n", NewDocument, None),
             KeyBinding::new("secondary-s", Save, None),
             KeyBinding::new("secondary-w", CloseTab, None),
             KeyBinding::new("secondary-\\", ToggleSplit, None),
             KeyBinding::new("secondary-q", Quit, None),
+            KeyBinding::new("secondary-shift-/", ToggleHelp, None),
+            KeyBinding::new("secondary-shift-e", ExportPdf, None),
+            KeyBinding::new("secondary-shift-t", ExportTypst, None),
+            KeyBinding::new("secondary-b", FormatBold, None),
+            KeyBinding::new("secondary-i", FormatItalic, None),
+            KeyBinding::new("secondary-shift-x", FormatStrike, None),
+            KeyBinding::new("secondary-e", FormatCode, None),
+            KeyBinding::new("secondary-k", InsertLink, None),
+            KeyBinding::new("secondary-alt-1", Heading1, None),
+            KeyBinding::new("secondary-alt-2", Heading2, None),
+            KeyBinding::new("secondary-alt-3", Heading3, None),
+            KeyBinding::new("secondary-shift-8", BulletList, None),
+            KeyBinding::new("secondary-shift-7", NumberedList, None),
+            KeyBinding::new("secondary-shift-9", TaskList, None),
+            KeyBinding::new("secondary-shift-.", QuoteBlock, None),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.set_menus([
             Menu::new("DevMark").items([MenuItem::action("DevMark beenden", Quit)]),
             Menu::new("Datei").items([
+                MenuItem::action("Neues Dokument …", NewDocument),
                 MenuItem::action("Öffnen …", Open),
                 MenuItem::separator(),
                 MenuItem::action("Speichern", Save),
                 MenuItem::action("Tab schließen", CloseTab),
+                MenuItem::separator(),
+                MenuItem::action("Nach Typst umwandeln", ExportTypst),
+                MenuItem::action("Als PDF exportieren", ExportPdf),
             ]),
-            Menu::new("Ansicht").items([MenuItem::action("Split umschalten", ToggleSplit)]),
+            Menu::new("Format").items([
+                MenuItem::action("Fett", FormatBold),
+                MenuItem::action("Kursiv", FormatItalic),
+                MenuItem::action("Durchgestrichen", FormatStrike),
+                MenuItem::action("Code im Text", FormatCode),
+                MenuItem::action("Link", InsertLink),
+                MenuItem::separator(),
+                MenuItem::action("Überschrift 1", Heading1),
+                MenuItem::action("Überschrift 2", Heading2),
+                MenuItem::action("Überschrift 3", Heading3),
+                MenuItem::separator(),
+                MenuItem::action("Aufzählung", BulletList),
+                MenuItem::action("Nummerierte Liste", NumberedList),
+                MenuItem::action("Aufgabenliste", TaskList),
+                MenuItem::action("Zitat", QuoteBlock),
+            ]),
+            Menu::new("Einfügen").items([
+                MenuItem::action("Bild", InsertImage),
+                MenuItem::action("Tabelle", InsertTable),
+                MenuItem::action("Codeblock", InsertCodeBlock),
+                MenuItem::action("Fußnote", InsertFootnote),
+                MenuItem::action("Hinweisbox", InsertCallout),
+                MenuItem::separator(),
+                MenuItem::action("Formel im Text", InsertMath),
+                MenuItem::action("Formel (abgesetzt)", InsertMathBlock),
+                MenuItem::separator(),
+                MenuItem::action("Trennlinie", InsertRule),
+                MenuItem::action("Seitenumbruch (Typst)", InsertPageBreak),
+                MenuItem::action("Inhaltsverzeichnis (Typst)", InsertOutline),
+            ]),
+            Menu::new("Ansicht").items([
+                MenuItem::action("Split umschalten", ToggleSplit),
+                MenuItem::action("Spickzettel", ToggleHelp),
+            ]),
         ]);
         cx.activate(true);
 
@@ -475,4 +1240,16 @@ fn main() {
         )
         .expect("open window");
     });
+}
+
+/// Startordner ohne Argument: aktuelles Verzeichnis, außer es ist `/` (Start aus dem Finder).
+fn default_root() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    if cwd.parent().is_some() {
+        return cwd;
+    }
+    std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join("Documents"))
+        .filter(|docs| docs.is_dir())
+        .unwrap_or(cwd)
 }

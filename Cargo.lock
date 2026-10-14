@@ -1478,7 +1478,10 @@ dependencies = [
 name = "devmark"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
+ "devmark-writing",
  "gpui-kit",
+ "lsp-types",
 ]
 
 [[package]]
