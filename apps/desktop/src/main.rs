@@ -4,11 +4,12 @@ use std::path::{Path, PathBuf};
 
 use gpui_kit::assets::Assets;
 use gpui_kit::component::{
-    ActiveTheme, IconName, Sizable,
+    ActiveTheme, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Editor, EditorState, InputEvent, TabSize},
     list::ListItem,
+    notification::Notification,
     resizable::{h_resizable, resizable_panel},
     status_bar::StatusBar,
     tab::{Tab, TabBar},
@@ -44,7 +45,12 @@ struct Workspace {
 }
 
 impl Workspace {
-    fn new(root: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        root: PathBuf,
+        file: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let tree_state = cx.new(|cx| TreeState::new(cx));
         let items = build_file_items(&root);
         tree_state.update(cx, |state, cx| state.set_items(items, cx));
@@ -55,6 +61,9 @@ impl Workspace {
             let focus_handle = focus_handle.clone();
             move |window, cx| focus_handle.focus(window, cx)
         });
+        if let Some(file) = file {
+            cx.defer_in(window, move |this, window, cx| this.open_file(file, window, cx));
+        }
 
         Self {
             focus_handle,
@@ -113,7 +122,13 @@ impl Workspace {
         let content = match std::fs::read_to_string(&path) {
             Ok(content) => content,
             Err(err) => {
-                eprintln!("{}: {err}", path.display());
+                let name = file_name(&path);
+                let message = if err.kind() == std::io::ErrorKind::InvalidData {
+                    format!("„{name}“ ist keine Textdatei und kann nicht geöffnet werden.")
+                } else {
+                    format!("„{name}“ konnte nicht geöffnet werden: {err}")
+                };
+                window.push_notification(Notification::error(message), cx);
                 return;
             }
         };
@@ -167,7 +182,7 @@ impl Workspace {
         pane.buffers.get(pane.active)
     }
 
-    fn save(&mut self, _: &Save, _window: &mut Window, cx: &mut Context<Self>) {
+    fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
         let pane = &mut self.panes[self.active_pane];
         let Some(buffer) = pane.buffers.get_mut(pane.active) else {
             return;
@@ -175,7 +190,13 @@ impl Workspace {
         let content = buffer.editor.read(cx).value();
         match std::fs::write(&buffer.path, content.as_bytes()) {
             Ok(()) => buffer.dirty = false,
-            Err(err) => eprintln!("{}: {err}", buffer.path.display()),
+            Err(err) => {
+                let message = format!(
+                    "„{}“ konnte nicht gespeichert werden: {err}",
+                    file_name(&buffer.path)
+                );
+                window.push_notification(Notification::error(message), cx);
+            }
         }
         cx.notify();
     }
@@ -238,11 +259,7 @@ impl Workspace {
     fn render_pane(&self, pane_ix: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let pane = &self.panes[pane_ix];
         let tabs = pane.buffers.iter().map(|buffer| {
-            let name = buffer
-                .path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
+            let name = file_name(&buffer.path);
             let label = if buffer.dirty { format!("● {name}") } else { name };
             Tab::new().label(label)
         });
@@ -367,6 +384,12 @@ fn language_for(path: &Path) -> String {
     .to_string()
 }
 
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
 fn window_title(root: &Path) -> String {
     format!(
         "DevMark – {}",
@@ -401,11 +424,18 @@ fn build_file_items(dir: &Path) -> Vec<TreeItem> {
 }
 
 fn main() {
-    let root = std::env::args()
+    // Argument: Ordner (wird Wurzel) oder Datei (Elternordner wird Wurzel, Datei wird geöffnet).
+    let arg = std::env::args()
         .nth(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().expect("current dir"));
-    let root = root.canonicalize().unwrap_or(root);
+    let arg = arg.canonicalize().unwrap_or(arg);
+    let (root, file) = if arg.is_file() {
+        let parent = arg.parent().map(Path::to_path_buf).unwrap_or_default();
+        (parent, Some(arg))
+    } else {
+        (arg, None)
+    };
 
     gpui_kit::application().with_assets(Assets).run(move |cx| {
         gpui_kit::init(cx);
@@ -441,7 +471,7 @@ fn main() {
                 ..Default::default()
             },
             cx,
-            |window, cx| cx.new(|cx| Workspace::new(root, window, cx)),
+            |window, cx| cx.new(|cx| Workspace::new(root, file, window, cx)),
         )
         .expect("open window");
     });
