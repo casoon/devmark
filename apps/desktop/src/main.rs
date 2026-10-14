@@ -2,6 +2,7 @@
 //! Schreibhilfen für Markdown/Typst und Export nach Typst/PDF.
 
 mod assist;
+mod notes_ui;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -28,6 +29,7 @@ use gpui_kit::component::{
 use gpui_kit::*;
 
 use crate::assist::WritingAssist;
+use crate::notes_ui::{NotesState, SidebarMode};
 
 actions!(
     devmark,
@@ -42,6 +44,13 @@ actions!(
         ExportPdf,
         ToggleHelp,
         TogglePreview,
+        NewNote,
+        SelectionToNote,
+        ExportNotes,
+        BackupNow,
+        ShowFiles,
+        ShowNotes,
+        ToggleTrash,
         FormatBold,
         FormatItalic,
         FormatStrike,
@@ -97,6 +106,7 @@ icon_assets!(
         FilePlus,
         Printer,
         FileType,
+        Trash,
     ]
 );
 
@@ -150,10 +160,21 @@ fn format_entries() -> Vec<(Format, AssetIcon, Box<dyn gpui_kit::Action>)> {
 const IGNORED_DIRS: &[&str] = &[".git", "target", "node_modules", "build", ".dart_tool"];
 
 struct Buffer {
+    /// Dateipfad; bei Notizen ein virtueller Pfad im Datenordner (für relative Bilder, Vorschau).
     path: PathBuf,
     editor: Entity<EditorState>,
     syntax: Option<Syntax>,
     dirty: bool,
+    /// Notiz aus der Datenbank statt Datei (Autosave, kein Dateiname).
+    note_id: Option<String>,
+    /// Anzeigename für Notizen (erste Zeile).
+    title: Option<String>,
+}
+
+impl Buffer {
+    fn label(&self) -> String {
+        self.title.clone().unwrap_or_else(|| file_name(&self.path))
+    }
 }
 
 #[derive(Default)]
@@ -195,6 +216,8 @@ struct Workspace {
     preview: Preview,
     preview_task: Task<()>,
     new_doc: Option<NewDocForm>,
+    sidebar: SidebarMode,
+    notes: Option<NotesState>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -219,6 +242,8 @@ impl Workspace {
         if let Some(file) = file {
             cx.defer_in(window, move |this, window, cx| this.open_file(file, window, cx));
         }
+        let notes = NotesState::open(window, cx);
+        cx.defer_in(window, |this, window, cx| this.after_start(window, cx));
 
         Self {
             focus_handle,
@@ -232,6 +257,8 @@ impl Workspace {
             preview: Preview::default(),
             preview_task: Task::ready(()),
             new_doc: None,
+            sidebar: SidebarMode::Files,
+            notes,
             _subscriptions: Vec::new(),
         }
     }
@@ -298,13 +325,27 @@ impl Workspace {
                 return;
             }
         };
+        self.open_buffer(path, content, None, window, cx);
+    }
+
+    /// Neuer Tab mit Editor für Datei- oder Notizinhalt.
+    fn open_buffer(
+        &mut self,
+        path: PathBuf,
+        content: String,
+        note: Option<(String, String)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pane_ix = self.active_pane;
         let language = language_for(&path);
         let syntax = Syntax::for_path(&path);
 
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .language(language)
-                .line_number(true)
+                // Notizen wie in Apple Notes ohne Zeilennummern.
+                .line_number(note.is_none())
                 .indent_guides(true)
                 .tab_size(TabSize {
                     tab_size: 4,
@@ -323,8 +364,13 @@ impl Workspace {
 
         let subscription = cx.subscribe(&editor, |this, editor, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
+                let mut note_id = None;
                 if let Some(buffer) = this.buffer_for_editor(&editor) {
                     buffer.dirty = true;
+                    note_id = buffer.note_id.clone();
+                }
+                if let Some(note_id) = note_id {
+                    this.schedule_note_save(note_id, cx);
                 }
                 if this.active_buffer().is_some_and(|b| b.editor == editor) {
                     this.schedule_preview(Duration::from_millis(400), cx);
@@ -336,12 +382,18 @@ impl Workspace {
 
         editor.update(cx, |state, cx| state.focus(window, cx));
 
+        let (note_id, title) = match note {
+            Some((id, title)) => (Some(id), Some(title)),
+            None => (None, None),
+        };
         let pane = &mut self.panes[pane_ix];
         pane.buffers.push(Buffer {
             path,
             editor,
             syntax,
             dirty: false,
+            note_id,
+            title,
         });
         pane.active = pane.buffers.len() - 1;
         self.schedule_preview(Duration::ZERO, cx);
@@ -361,6 +413,10 @@ impl Workspace {
     }
 
     fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(note_id) = self.active_buffer().and_then(|b| b.note_id.clone()) {
+            self.save_note(&note_id, window, cx);
+            return;
+        }
         let pane = &mut self.panes[self.active_pane];
         let Some(buffer) = pane.buffers.get_mut(pane.active) else {
             return;
@@ -379,10 +435,14 @@ impl Workspace {
         cx.notify();
     }
 
-    fn close_tab(&mut self, _: &CloseTab, _window: &mut Window, cx: &mut Context<Self>) {
+    fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
         if self.new_doc.take().is_some() {
             cx.notify();
             return;
+        }
+        // Notizen vor dem Schließen sichern (Autosave könnte noch ausstehen).
+        if let Some(note_id) = self.active_buffer().filter(|b| b.dirty).and_then(|b| b.note_id.clone()) {
+            self.save_note(&note_id, window, cx);
         }
         let pane = &mut self.panes[self.active_pane];
         if pane.buffers.is_empty() {
@@ -575,6 +635,14 @@ impl Workspace {
         }
         let source = buffer.editor.read(cx).value().to_string();
         let path = buffer.path.clone();
+        if buffer.note_id.is_some() {
+            // Notizen haben keinen Speicherort – Ziel erfragen.
+            let name = format!("{}.typ", buffer.label());
+            self.ask_export_path(name, move |this, target, window, cx| {
+                this.write_typst_export(&source, &path, target, window, cx)
+            }, window, cx);
+            return;
+        }
         let target = path.with_extension("typ");
         if target.exists() && !generated_by_devmark(&target) {
             window.push_notification(
@@ -586,7 +654,13 @@ impl Workspace {
             );
             return;
         }
-        let conversion = markdown_to_typst(&source, &Options::for_file(&path));
+        self.write_typst_export(&source, &path, target, window, cx);
+    }
+
+    fn write_typst_export(&mut self, source: &str, path: &Path, target: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let mut options = Options::for_file(path);
+        options.output_dir = target.parent().map(Path::to_path_buf);
+        let conversion = markdown_to_typst(source, &options);
         if let Err(err) = std::fs::write(&target, &conversion.typst) {
             window.push_notification(
                 Notification::error(format!("„{}“ konnte nicht geschrieben werden: {err}", file_name(&target))),
@@ -606,6 +680,29 @@ impl Workspace {
         window.push_notification(Notification::success(message), cx);
         self.refresh_tree(cx);
         self.reload_or_open(target, conversion.typst, window, cx);
+    }
+
+    /// Speichern-Dialog (Startordner: Dokumente), danach `then` mit dem gewählten Pfad.
+    fn ask_export_path(
+        &mut self,
+        suggested_name: String,
+        then: impl FnOnce(&mut Self, PathBuf, &mut Window, &mut Context<Self>) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let directory = std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join("Documents"))
+            .filter(|dir| dir.is_dir())
+            .unwrap_or_else(|| self.root.clone());
+        let name = suggested_name.replace(['/', '\\', ':'], "-");
+        let receiver = cx.prompt_for_new_path(&directory, Some(&name));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(target))) = receiver.await else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| then(this, target, window, cx)).ok();
+        })
+        .detach();
     }
 
     /// Öffnet `path`; ist die Datei schon offen, wird ihr Inhalt ersetzt.
@@ -643,7 +740,26 @@ impl Workspace {
         };
         let source = buffer.editor.read(cx).value().to_string();
         let path = buffer.path.clone();
+        if buffer.note_id.is_some() {
+            let name = format!("{}.pdf", buffer.label());
+            self.ask_export_path(name, move |this, target, window, cx| {
+                this.start_pdf_export(source, syntax, path, target, window, cx)
+            }, window, cx);
+            return;
+        }
         let pdf_path = path.with_extension("pdf");
+        self.start_pdf_export(source, syntax, path, pdf_path, window, cx);
+    }
+
+    fn start_pdf_export(
+        &mut self,
+        source: String,
+        syntax: Syntax,
+        path: PathBuf,
+        pdf_path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         window.push_notification(Notification::info(format!("„{}“ wird erstellt …", file_name(&pdf_path))), cx);
 
         let task = cx.background_spawn({
@@ -1030,8 +1146,9 @@ impl Workspace {
     fn render_pane(&self, pane_ix: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let pane = &self.panes[pane_ix];
         let tabs = pane.buffers.iter().map(|buffer| {
-            let name = file_name(&buffer.path);
-            let label = if buffer.dirty { format!("● {name}") } else { name };
+            let name = buffer.label();
+            // Notizen speichern automatisch – kein Punkt für „ungespeichert“.
+            let label = if buffer.dirty && buffer.note_id.is_none() { format!("● {name}") } else { name };
             Tab::new().label(label)
         });
 
@@ -1139,7 +1256,10 @@ impl Render for Workspace {
         let status = self
             .active_buffer()
             .map(|b| {
-                let path = b.path.strip_prefix(&self.root).unwrap_or(&b.path).display().to_string();
+                let path = match &b.note_id {
+                    Some(_) => format!("Notiz – {}", b.label()),
+                    None => b.path.strip_prefix(&self.root).unwrap_or(&b.path).display().to_string(),
+                };
                 match b.syntax {
                     Some(syntax) => format!("{path} · {}", syntax.name()),
                     None => path,
@@ -1159,6 +1279,13 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_split))
             .on_action(cx.listener(Self::toggle_help))
             .on_action(cx.listener(Self::toggle_preview))
+            .on_action(cx.listener(Self::new_note))
+            .on_action(cx.listener(Self::selection_to_note))
+            .on_action(cx.listener(Self::export_notes))
+            .on_action(cx.listener(Self::backup_now))
+            .on_action(cx.listener(Self::show_files))
+            .on_action(cx.listener(Self::show_notes))
+            .on_action(cx.listener(Self::toggle_trash))
             .on_action(cx.listener(Self::new_document))
             .on_action(cx.listener(Self::export_typst))
             .on_action(cx.listener(Self::export_pdf));
@@ -1192,8 +1319,8 @@ impl Render for Workspace {
                 h_resizable("workspace-split")
                     .child(
                         resizable_panel()
-                            .size(px(240.))
-                            .child(self.render_file_tree(cx)),
+                            .size(px(260.))
+                            .child(self.render_sidebar(cx)),
                     )
                     .child(resizable_panel().child(main)),
             ),
@@ -1255,10 +1382,23 @@ fn generated_by_devmark(path: &Path) -> bool {
 }
 
 fn today() -> String {
-    let days = std::time::SystemTime::now()
+    let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() / 86_400)
-        .unwrap_or(0) as i64;
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    iso_date(ms)
+}
+
+/// Datum (UTC) als `14.10.2026`.
+fn date_from_ms(ms: i64) -> String {
+    let iso = iso_date(ms);
+    let mut parts = iso.split('-');
+    let (year, month, day) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+    format!("{day}.{month}.{year}")
+}
+
+fn iso_date(ms: i64) -> String {
+    let days = ms.div_euclid(86_400_000);
     // Tage seit 1970 → Datum (Howard Hinnant).
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -1331,6 +1471,8 @@ fn main() {
             KeyBinding::new("secondary-q", Quit, None),
             KeyBinding::new("secondary-shift-/", ToggleHelp, None),
             KeyBinding::new("secondary-shift-v", TogglePreview, None),
+            KeyBinding::new("secondary-shift-n", NewNote, None),
+            KeyBinding::new("secondary-shift-f", ShowNotes, None),
             KeyBinding::new("secondary-shift-e", ExportPdf, None),
             KeyBinding::new("secondary-shift-t", ExportTypst, None),
             KeyBinding::new("secondary-b", FormatBold, None),
@@ -1389,7 +1531,19 @@ fn main() {
                 MenuItem::action("Seitenumbruch (Typst)", InsertPageBreak),
                 MenuItem::action("Inhaltsverzeichnis (Typst)", InsertOutline),
             ]),
+            Menu::new("Notizen").items([
+                MenuItem::action("Neue Notiz", NewNote),
+                MenuItem::action("Auswahl als Notiz", SelectionToNote),
+                MenuItem::action("Notizen durchsuchen", ShowNotes),
+                MenuItem::action("Papierkorb", ToggleTrash),
+                MenuItem::separator(),
+                MenuItem::action("Alle Notizen exportieren …", ExportNotes),
+                MenuItem::action("Backup jetzt erstellen", BackupNow),
+            ]),
             Menu::new("Ansicht").items([
+                MenuItem::action("Dateien", ShowFiles),
+                MenuItem::action("Notizen", ShowNotes),
+                MenuItem::separator(),
                 MenuItem::action("Split umschalten", ToggleSplit),
                 MenuItem::action("Vorschau", TogglePreview),
                 MenuItem::action("Spickzettel", ToggleHelp),

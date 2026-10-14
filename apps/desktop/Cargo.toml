@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
+devmark-notes = { path = "../../crates/notes" }
 devmark-writing = { path = "../../crates/writing" }
 gpui-kit.workspace = true
 lsp-types = "0.97.0"
