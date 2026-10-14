@@ -1,0 +1,10 @@
+[workspace]
+resolver = "3"
+members = ["apps/desktop"]
+
+[workspace.package]
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+gpui-kit = { version = "0.7.3", features = ["tree-sitter-languages"] }
