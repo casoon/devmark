@@ -4,6 +4,7 @@
 mod assist;
 mod notes_ui;
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -23,7 +24,7 @@ use gpui_kit::component::{
     resizable::{h_resizable, resizable_panel},
     status_bar::StatusBar,
     tab::{Tab, TabBar},
-    tree::{TreeItem, TreeState, tree},
+    tree::{TreeEvent, TreeItem, TreeState, tree},
     v_flex,
 };
 use gpui_kit::*;
@@ -207,9 +208,48 @@ struct Preview {
 const PREVIEW_PIXEL_PER_PT: f64 = 1.5;
 const PREVIEW_MAX_PAGES: usize = 60;
 
+/// Dateibaum, der Ordner erst beim Aufklappen liest – große oder geschützte Ordner
+/// (macOS: Dokumente, Schreibtisch) blockieren so den Start nicht.
+#[derive(Default)]
+struct FileTree {
+    listings: HashMap<PathBuf, Vec<(PathBuf, String, bool)>>,
+    expanded: HashSet<PathBuf>,
+}
+
+/// Kennzeichen für Platzhalter-Einträge in noch nicht gelesenen Ordnern.
+const PLACEHOLDER_SUFFIX: &str = "\u{0}placeholder";
+
+impl FileTree {
+    fn listing(&mut self, dir: &Path) -> &[(PathBuf, String, bool)] {
+        self.listings.entry(dir.to_path_buf()).or_insert_with(|| list_dir(dir))
+    }
+
+    fn items(&mut self, dir: &Path) -> Vec<TreeItem> {
+        let entries = self.listing(dir).to_vec();
+        entries
+            .into_iter()
+            .map(|(path, name, is_dir)| {
+                let id = path.to_string_lossy().to_string();
+                if !is_dir {
+                    return TreeItem::new(id, name);
+                }
+                let expanded = self.expanded.contains(&path);
+                let mut children = if expanded { self.items(&path) } else { Vec::new() };
+                if children.is_empty() {
+                    // Ohne Kind wäre der Eintrag kein Ordner mehr.
+                    let label = if expanded { "(leer)" } else { "…" };
+                    children.push(TreeItem::new(format!("{id}{PLACEHOLDER_SUFFIX}"), label).disabled(true));
+                }
+                TreeItem::new(id, name).children(children).expanded(expanded)
+            })
+            .collect()
+    }
+}
+
 struct Workspace {
     root: PathBuf,
     tree_state: Entity<TreeState>,
+    file_tree: FileTree,
     panes: Vec<Pane>,
     active_pane: usize,
     split: bool,
@@ -231,9 +271,23 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        remember_root(&root);
         let tree_state = cx.new(|cx| TreeState::new(cx));
-        let items = build_file_items(&root);
+        let mut file_tree = FileTree::default();
+        let items = file_tree.items(&root);
         tree_state.update(cx, |state, cx| state.set_items(items, cx));
+        let tree_subscription = cx.subscribe(&tree_state, |this: &mut Self, _, event: &TreeEvent, cx| {
+            match event {
+                TreeEvent::Expanded(id) => {
+                    this.file_tree.expanded.insert(PathBuf::from(id.as_str()));
+                }
+                TreeEvent::Collapsed(id) => {
+                    this.file_tree.expanded.remove(&PathBuf::from(id.as_str()));
+                    return;
+                }
+            }
+            this.rebuild_tree(cx);
+        });
 
         // Fokus auf dem Workspace, damit Menü-Aktionen auch ohne offene Datei ankommen.
         let focus_handle = cx.focus_handle();
@@ -251,6 +305,7 @@ impl Workspace {
             focus_handle,
             root,
             tree_state,
+            file_tree,
             panes: vec![Pane::default(), Pane::default()],
             active_pane: 0,
             split: false,
@@ -261,7 +316,7 @@ impl Workspace {
             new_doc: None,
             sidebar: SidebarMode::Files,
             notes,
-            _subscriptions: Vec::new(),
+            _subscriptions: vec![tree_subscription],
         }
     }
 
@@ -307,12 +362,20 @@ impl Workspace {
 
     fn set_root(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         window.set_window_title(&window_title(&root));
+        remember_root(&root);
+        self.file_tree = FileTree::default();
         self.root = root;
         self.refresh_tree(cx);
     }
 
+    /// Ordnerinhalte neu einlesen (aufgeklappte Ordner bleiben offen).
     fn refresh_tree(&mut self, cx: &mut Context<Self>) {
-        let items = build_file_items(&self.root);
+        self.file_tree.listings.clear();
+        self.rebuild_tree(cx);
+    }
+
+    fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
+        let items = self.file_tree.items(&self.root);
         self.tree_state
             .update(cx, |state, cx| state.set_items(items, cx));
         cx.notify();
@@ -848,7 +911,7 @@ impl Workspace {
                     .on_click(cx.listener({
                         let item = item.clone();
                         move |this, _, window, cx| {
-                            if !item.is_folder() {
+                            if !item.is_folder() && !item.id.ends_with(PLACEHOLDER_SUFFIX) {
                                 this.open_file(PathBuf::from(item.id.as_str()), window, cx);
                             }
                         }
@@ -1470,30 +1533,38 @@ fn window_title(root: &Path) -> String {
     )
 }
 
-fn build_file_items(dir: &Path) -> Vec<TreeItem> {
-    let mut items = Vec::new();
+/// Einträge eines Ordners: Ordner zuerst, alphabetisch; Build-/VCS-Ordner ausgeblendet.
+fn list_dir(dir: &Path) -> Vec<(PathBuf, String, bool)> {
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return items;
+        return Vec::new();
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        let id = path.to_string_lossy().to_string();
-        if path.is_dir() {
-            if IGNORED_DIRS.contains(&name.as_str()) {
-                continue;
-            }
-            items.push(TreeItem::new(id, name).children(build_file_items(&path)));
-        } else if name != ".DS_Store" {
-            items.push(TreeItem::new(id, name));
-        }
-    }
-    items.sort_by(|a, b| {
-        b.is_folder()
-            .cmp(&a.is_folder())
-            .then(a.label.cmp(&b.label))
-    });
+    let mut items: Vec<(PathBuf, String, bool)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let path = entry.path();
+            let is_dir = path.is_dir();
+            // Versteckte Ordner (Home voller Tool-Ordner) aus, nützliche Projektordner an.
+            let hidden = if is_dir {
+                IGNORED_DIRS.contains(&name.as_str())
+                    || (name.starts_with('.') && !matches!(name.as_str(), ".github" | ".vscode"))
+            } else {
+                name == ".DS_Store"
+            };
+            (!hidden).then_some((path, name, is_dir))
+        })
+        .collect();
+    items.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
     items
+}
+
+/// Zuletzt geöffneter Ordner (für den Start aus dem Finder).
+fn remember_root(root: &Path) {
+    let file = notes_ui::data_dir().join("last-root");
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::write(file, root.to_string_lossy().as_bytes()).ok();
 }
 
 fn main() {
@@ -1668,9 +1739,13 @@ fn default_root() -> PathBuf {
     if cwd.parent().is_some() {
         return cwd;
     }
-    std::env::var_os("HOME")
-        .map(|home| PathBuf::from(home).join("Documents"))
-        .filter(|docs| docs.is_dir())
+    // Aus dem Finder gestartet: zuletzt geöffneter Ordner, sonst Home (ohne Datenschutz-Rückfrage
+    // lesbar; Dokumente/Schreibtisch fragen erst beim Aufklappen).
+    std::fs::read_to_string(notes_ui::data_dir().join("last-root"))
+        .ok()
+        .map(|s| PathBuf::from(s.trim()))
+        .filter(|dir| dir.is_dir())
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
         .unwrap_or(cwd)
 }
 
