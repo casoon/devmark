@@ -1,0 +1,13 @@
+[package]
+name = "devmark-writing"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pulldown-cmark = { version = "0.13.4", default-features = false }
+mitex = "0.2.4"
+typst = "0.15.1"
+typst-pdf = "0.15.1"
+typst-layout = "0.15.1"
+typst-kit = { version = "0.15.1", features = ["embedded-fonts", "scan-fonts", "system-packages"] }

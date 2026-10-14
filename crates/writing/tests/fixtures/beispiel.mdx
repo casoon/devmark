@@ -1,0 +1,58 @@
+---
+title: MDX-Beispiel
+lang: en
+---
+import { Callout } from 'nextra/components'
+import Tabs from '@theme/Tabs'
+import TabItem from '@theme/TabItem'
+export const meta = {
+  author: 'Ada',
+  tags: ['a', 'b'],
+}
+
+# Getting started
+
+{/* This comment disappears */}
+
+<Callout type="warning" title="Heads up">
+This is **important** and spans
+multiple lines.
+</Callout>
+
+<Callout type="info">
+
+Callout with blank lines and a list:
+
+- one
+- two
+
+</Callout>
+
+<Tabs>
+  <TabItem value="npm" label="npm">
+
+```bash
+npm install devmark
+```
+
+  </TabItem>
+  <TabItem value="cargo" label="Cargo">
+
+```bash
+cargo install devmark
+```
+
+  </TabItem>
+</Tabs>
+
+Inline expression {meta.author} and a component <Badge text="new" /> inline.
+
+<MyChart data={[1, 2, 3]} />
+
+<Note>Short inline note.</Note>
+
+export default function Layout({ children }) {
+  return <div>{children}</div>
+}
+
+The end.
