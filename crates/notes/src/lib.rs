@@ -182,6 +182,10 @@ impl Notes {
         &self.store
     }
 
+    pub fn store_mut(&mut self) -> &mut Store {
+        &mut self.store
+    }
+
     // ---- Dokumente ----
 
     pub fn create(&mut self, kind: Kind, format: Format, title: &str, content: &str, folder_id: Option<&str>) -> Result<Document> {
@@ -491,7 +495,9 @@ impl Notes {
                 id
             }
             None => {
-                let id = new_id();
+                // Aus dem Namen abgeleitet: zwei Geräte, die denselben Tag anlegen, erzeugen
+                // dieselbe ID – sonst kollidiert der eindeutige Name beim Sync.
+                let id = tag_id(name);
                 tx.execute(
                     "INSERT INTO tags(id, name, created_at, updated_at, device_id) VALUES (?1, ?2, ?3, ?3, ?4)",
                     params![id, name, now, device],
@@ -584,6 +590,11 @@ impl Notes {
         })?;
         rows.collect()
     }
+}
+
+/// Stabile Tag-ID aus dem Namen (Groß-/Kleinschreibung egal).
+pub fn tag_id(name: &str) -> String {
+    format!("tag:{}", name.trim().trim_start_matches('#').to_lowercase())
 }
 
 /// `#tags` im Markdown-Text (wie in Apple Notes/Obsidian). Überschriften (`# Titel`),

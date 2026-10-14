@@ -1515,6 +1515,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "devmark-sync"
+version = "0.1.0"
+dependencies = [
+ "devmark-notes",
+ "devmark-storage",
+ "rusqlite",
+ "serde_json",
+]
+
+[[package]]
 name = "devmark-writing"
 version = "0.1.0"
 dependencies = [

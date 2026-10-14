@@ -114,6 +114,16 @@ const MIGRATIONS: &[&str] = &[
         INSERT INTO documents_fts(rowid, title, content) VALUES (new.rid, new.title, new.content);
     END;
     "#,
+    // 2: Sync-Zustand je Datensatz (Stand beim letzten Abgleich).
+    r#"
+    CREATE TABLE sync_state (
+        entity      TEXT NOT NULL,
+        entity_id   TEXT NOT NULL,
+        synced_hash TEXT NOT NULL,
+        remote_etag TEXT NOT NULL,
+        PRIMARY KEY (entity, entity_id)
+    );
+    "#,
 ];
 
 #[cfg(test)]
