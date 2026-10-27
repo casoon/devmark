@@ -11,9 +11,11 @@ Der frühere Flutter-Stand liegt im Branch `archive/flutter-v0.1`.
 cargo run -p devmark -- <ordner-oder-datei>
 ```
 
+Ein Ordner wird zum Workspace; der Dateibaum zeigt nur ihn. Eine Datei öffnet sich im zuletzt genutzten Workspace, auch wenn sie außerhalb liegt. Ohne Argument startet DevMark im zuletzt genutzten Workspace.
+
 ## Funktionen
 
-- **Editor:** Dateibaum, Syntax-Highlighting, Tabs, geteilte Ansicht, Öffnen-Dialog.
+- **Editor:** Workspace (ein Hauptordner) mit Dateibaum, Syntax-Highlighting, Tabs, geteilte Ansicht, Öffnen-Dialog.
 - **Schreiben (Markdown, Typst):** Formatleiste, Menüs „Format“/„Einfügen“, `/` am Zeilenanfang öffnet eine Einfüge-Liste, Erklärung beim Überfahren von Syntax, Spickzettel. „Neues Dokument“ legt Artikel, Bericht, Brief (DIN 5008), Buchkapitel, README oder Notiz an.
 - **Druck:** Live-Vorschau neben dem Text; Export als PDF (Typst-Satz) oder Umwandlung Markdown → Typst zum Weiterarbeiten.
 - **Notizen:** sofort schreiben ohne Dateinamen, Autosave, Volltextsuche, `#tags` im Text, Favoriten, Papierkorb (30 Tage), Versionsverlauf, Export aller Notizen als Dateien, tägliches Backup.

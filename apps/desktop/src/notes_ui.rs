@@ -724,7 +724,7 @@ impl Workspace {
             );
         }
         let body = match self.sidebar {
-            SidebarMode::Files => self.render_file_tree(cx).into_any_element(),
+            SidebarMode::Files => self.render_files(cx).into_any_element(),
             SidebarMode::Notes => self.render_notes_list(cx).into_any_element(),
         };
         v_flex()

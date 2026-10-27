@@ -16,11 +16,12 @@ use devmark_writing::templates::{DocInfo, DocType};
 use devmark_writing::{Options, compile_pdf, markdown_to_typst, render_pages};
 use gpui_kit::assets::{Assets, IconName as AssetIcon, icon_assets};
 use gpui_kit::component::{
-    ActiveTheme, IconName, Selectable, Sizable, Theme, WindowExt,
+    ActiveTheme, Icon, IconName, Selectable, Sizable, Theme, WindowExt,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Editor, EditorState, Input, InputEvent, InputState, TabSize},
     list::ListItem,
+    menu::{DropdownMenu as _, PopupMenuItem},
     notification::Notification,
     resizable::{h_resizable, resizable_panel},
     status_bar::StatusBar,
@@ -40,6 +41,7 @@ actions!(
     devmark,
     [
         Open,
+        OpenWorkspace,
         Save,
         ToggleSplit,
         CloseTab,
@@ -123,6 +125,11 @@ icon_assets!(
         FolderPlus,
         FolderInput,
         Pencil,
+        FolderTree,
+        NotebookPen,
+        FolderOpen,
+        ChevronsUpDown,
+        FileSymlink,
     ]
 );
 
@@ -328,7 +335,8 @@ impl FileTree {
 }
 
 struct Workspace {
-    root: PathBuf,
+    /// Hauptordner; der Dateibaum zeigt nur ihn. `None`: noch keiner gewählt.
+    root: Option<PathBuf>,
     tree_state: Entity<TreeState>,
     file_tree: FileTree,
     panes: Vec<Pane>,
@@ -349,16 +357,18 @@ struct Workspace {
 
 impl Workspace {
     fn new(
-        root: PathBuf,
+        root: Option<PathBuf>,
         file: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        remember_root(&root);
         let tree_state = cx.new(|cx| TreeState::new(cx));
         let mut file_tree = FileTree::default();
-        let items = file_tree.items(&root);
-        tree_state.update(cx, |state, cx| state.set_items(items, cx));
+        if let Some(root) = &root {
+            remember_root(root);
+            let items = file_tree.items(root);
+            tree_state.update(cx, |state, cx| state.set_items(items, cx));
+        }
         let tree_subscription = cx.subscribe(&tree_state, |this: &mut Self, _, event: &TreeEvent, cx| {
             match event {
                 TreeEvent::Expanded(id) => {
@@ -441,26 +451,47 @@ impl Workspace {
         .detach();
     }
 
-    /// Ordner wird Wurzel, Datei wird geöffnet (bei Datei außerhalb der Wurzel: deren Ordner).
+    /// Ordner als Workspace wählen.
+    fn open_workspace(&mut self, _: &OpenWorkspace, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Als Workspace öffnen".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = paths.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| this.set_root(path, window, cx)).ok();
+        })
+        .detach();
+    }
+
+    /// Ordner wird Workspace, Datei wird geöffnet – die Wurzel bleibt dabei, wo sie ist.
     fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if path.is_dir() {
             self.set_root(path, window, cx);
-            return;
+        } else {
+            self.open_file(path, window, cx);
         }
-        if !path.starts_with(&self.root)
-            && let Some(parent) = path.parent() {
-                self.set_root(parent.to_path_buf(), window, cx);
-            }
-        self.sidebar = SidebarMode::Files;
-        self.open_file(path, window, cx);
     }
 
     fn set_root(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        window.set_window_title(&window_title(&root));
+        window.set_window_title(&window_title(Some(&root)));
         remember_root(&root);
         self.file_tree = FileTree::default();
-        self.root = root;
+        self.root = Some(root);
+        self.sidebar = SidebarMode::Files;
         self.refresh_tree(cx);
+    }
+
+    /// Datei liegt nicht im Workspace (Notizen zählen nicht).
+    fn is_outside(&self, buffer: &Buffer) -> bool {
+        buffer.note_id.is_none() && !self.root.as_ref().is_some_and(|root| buffer.path.starts_with(root))
     }
 
     /// Ordnerinhalte neu einlesen (aufgeklappte Ordner bleiben offen).
@@ -470,7 +501,10 @@ impl Workspace {
     }
 
     fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
-        let items = self.file_tree.items(&self.root);
+        let items = match &self.root {
+            Some(root) => self.file_tree.items(root),
+            None => Vec::new(),
+        };
         self.tree_state
             .update(cx, |state, cx| state.set_items(items, cx));
         cx.notify();
@@ -936,6 +970,11 @@ impl Workspace {
     // ---- Neues Dokument ----
 
     fn new_document(&mut self, _: &NewDocument, window: &mut Window, cx: &mut Context<Self>) {
+        if self.root.is_none() {
+            window.push_notification(Notification::info("Neue Dokumente landen im Workspace – bitte erst einen Ordner wählen."), cx);
+            self.open_workspace(&OpenWorkspace, window, cx);
+            return;
+        }
         let title = cx.new(|cx| InputState::new(window, cx).placeholder("Titel des Dokuments"));
         let author = cx.new(|cx| InputState::new(window, cx).placeholder("Autor (optional)"));
         title.update(cx, |state, cx| state.focus(window, cx));
@@ -949,7 +988,7 @@ impl Workspace {
     }
 
     fn create_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(form) = self.new_doc.as_ref() else {
+        let (Some(form), Some(root)) = (self.new_doc.as_ref(), self.root.clone()) else {
             return;
         };
         let info = DocInfo {
@@ -963,10 +1002,10 @@ impl Workspace {
             Syntax::Typst => "typ",
         };
         let stem = form.doc_type.file_stem(&info);
-        let mut path = self.root.join(format!("{stem}.{extension}"));
+        let mut path = root.join(format!("{stem}.{extension}"));
         let mut n = 2;
         while path.exists() {
-            path = self.root.join(format!("{stem}-{n}.{extension}"));
+            path = root.join(format!("{stem}-{n}.{extension}"));
             n += 1;
         }
         let content = form.doc_type.render(form.syntax, &info);
@@ -1044,7 +1083,7 @@ impl Workspace {
         self.reload_or_open(target, conversion.typst, window, cx);
     }
 
-    /// Speichern-Dialog (Startordner: Dokumente), danach `then` mit dem gewählten Pfad.
+    /// Speichern-Dialog (Startordner: Workspace, sonst Dokumente), danach `then` mit dem gewählten Pfad.
     fn ask_export_path(
         &mut self,
         suggested_name: String,
@@ -1052,10 +1091,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let directory = std::env::var_os("HOME")
-            .map(|home| PathBuf::from(home).join("Documents"))
-            .filter(|dir| dir.is_dir())
-            .unwrap_or_else(|| self.root.clone());
+        let directory = self
+            .root
+            .clone()
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Documents")))
+            .unwrap_or_default();
         let name = suggested_name.replace(['/', '\\', ':'], "-");
         let receiver = cx.prompt_for_new_path(&directory, Some(&name));
         cx.spawn_in(window, async move |this, cx| {
@@ -1170,6 +1210,72 @@ impl Workspace {
     }
 
     // ---- Darstellung ----
+
+    /// Workspace-Kopf (Name + Wechsel) und Dateibaum; ohne Workspace eine Auswahl.
+    fn render_files(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let recent = recent_workspaces();
+        let Some(root) = self.root.clone() else {
+            let mut body = v_flex()
+                .p_3()
+                .gap_3()
+                .text_sm()
+                .child(div().text_color(cx.theme().muted_foreground).child(
+                    "Ein Workspace ist ein Hauptordner. Der Dateibaum zeigt nur ihn und seine Unterordner.",
+                ))
+                .child(
+                    Button::new("open-workspace")
+                        .outline()
+                        .small()
+                        .icon(AssetIcon::FolderOpen)
+                        .label("Ordner öffnen …")
+                        .on_click(cx.listener(|this, _, window, cx| this.open_workspace(&OpenWorkspace, window, cx))),
+                );
+            if !recent.is_empty() {
+                body = body.child(
+                    div().pt_2().text_xs().text_color(cx.theme().muted_foreground).child("Zuletzt geöffnet"),
+                );
+                for (ix, path) in recent.into_iter().enumerate() {
+                    body = body.child(
+                        ListItem::new(("recent", ix))
+                            .rounded(cx.theme().radius)
+                            .px_2()
+                            .py_1()
+                            .child(
+                                v_flex()
+                                    .child(file_name(&path))
+                                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child(tilde(&path))),
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| this.set_root(path.clone(), window, cx))),
+                    );
+                }
+            }
+            return body.into_any_element();
+        };
+
+        let workspace = cx.entity().downgrade();
+        let header = h_flex().px_2().pt_2().child(
+            Button::new("workspace-switch")
+                .ghost()
+                .small()
+                .icon(AssetIcon::ChevronsUpDown)
+                .label(file_name(&root))
+                .tooltip(tilde(&root))
+                .dropdown_menu(move |mut menu, _, _| {
+                    for path in recent.iter().filter(|path| **path != root) {
+                        let (workspace, path) = (workspace.clone(), path.clone());
+                        menu = menu.item(PopupMenuItem::new(tilde(&path)).on_click(move |_, window, cx| {
+                            workspace.update(cx, |this, cx| this.set_root(path.clone(), window, cx)).ok();
+                        }));
+                    }
+                    menu.separator().menu("Ordner öffnen …", Box::new(OpenWorkspace))
+                }),
+        );
+        v_flex()
+            .size_full()
+            .child(header)
+            .child(div().flex_1().min_h_0().child(self.render_file_tree(cx)))
+            .into_any_element()
+    }
 
     fn render_file_tree(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
@@ -1602,7 +1708,10 @@ impl Workspace {
                 div()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .child(format!("Die Datei wird in „{}“ angelegt.", self.root.display())),
+                    .child(format!(
+                        "Die Datei wird in „{}“ angelegt.",
+                        self.root.as_deref().map(Path::display).map(|d| d.to_string()).unwrap_or_default()
+                    )),
             )
     }
 
@@ -1612,7 +1721,14 @@ impl Workspace {
             let name = buffer.label();
             // Notizen speichern automatisch – kein Punkt für „ungespeichert“.
             let label = if buffer.dirty && buffer.note_id.is_none() { format!("● {name}") } else { name };
-            Tab::new().label(label)
+            Tab::new().label(label).when(self.is_outside(buffer), |tab| {
+                tab.prefix(
+                    Icon::new(AssetIcon::FileSymlink)
+                        .xsmall()
+                        .ml_2()
+                        .text_color(cx.theme().muted_foreground),
+                )
+            })
         });
 
         let view = cx.entity();
@@ -1681,7 +1797,7 @@ impl Workspace {
                 .justify_center()
                 .gap_3()
                 .text_color(cx.theme().muted_foreground)
-                .child("Datei im Baum auswählen")
+                .child(if self.root.is_some() { "Datei im Baum auswählen" } else { "Kein Workspace geöffnet" })
                 .child(
                     Button::new(("new-doc-empty", pane_ix))
                         .outline()
@@ -1751,7 +1867,8 @@ impl Render for Workspace {
             .map(|b| {
                 let path = match &b.note_id {
                     Some(_) => format!("Notiz – {}", b.label()),
-                    None => b.path.strip_prefix(&self.root).unwrap_or(&b.path).display().to_string(),
+                    None if self.is_outside(b) => format!("Außerhalb des Workspace – {}", tilde(&b.path)),
+                    None => self.root.as_ref().and_then(|root| b.path.strip_prefix(root).ok()).unwrap_or(&b.path).display().to_string(),
                 };
                 match b.syntax {
                     Some(syntax) => format!("{path} · {}", syntax.name()),
@@ -1767,6 +1884,7 @@ impl Render for Workspace {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(Self::open))
+            .on_action(cx.listener(Self::open_workspace))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::quit))
             .on_action(cx.listener(Self::close_tab))
@@ -1966,11 +2084,19 @@ fn iso_date(ms: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
-fn window_title(root: &Path) -> String {
-    format!(
-        "DevMark – {}",
-        root.file_name().unwrap_or_default().to_string_lossy()
-    )
+fn window_title(root: Option<&Path>) -> String {
+    match root {
+        Some(root) => format!("DevMark – {}", root.file_name().unwrap_or_default().to_string_lossy()),
+        None => "DevMark".into(),
+    }
+}
+
+/// `/Users/x/a.md` → `~/a.md`.
+fn tilde(path: &Path) -> String {
+    std::env::var_os("HOME")
+        .and_then(|home| path.strip_prefix(home).ok())
+        .map(|rest| format!("~/{}", rest.display()))
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 /// Einträge eines Ordners: Ordner zuerst, alphabetisch; Build-/VCS-Ordner ausgeblendet.
@@ -1998,13 +2124,32 @@ fn list_dir(dir: &Path) -> Vec<(PathBuf, String, bool)> {
     items
 }
 
-/// Zuletzt geöffneter Ordner (für den Start aus dem Finder).
+const MAX_RECENT_WORKSPACES: usize = 8;
+
+/// Zuletzt geöffnete Workspaces, neuester zuerst (nur noch vorhandene Ordner).
+fn recent_workspaces() -> Vec<PathBuf> {
+    let dir = notes_ui::data_dir();
+    // `last-root` stammt aus der Zeit vor der Liste.
+    std::fs::read_to_string(dir.join("workspaces"))
+        .or_else(|_| std::fs::read_to_string(dir.join("last-root")))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| PathBuf::from(line.trim()))
+        .filter(|path| path.is_dir())
+        .collect()
+}
+
 fn remember_root(root: &Path) {
-    let file = notes_ui::data_dir().join("last-root");
+    let mut recent = recent_workspaces();
+    recent.retain(|path| path != root);
+    recent.insert(0, root.to_path_buf());
+    recent.truncate(MAX_RECENT_WORKSPACES);
+    let file = notes_ui::data_dir().join("workspaces");
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    std::fs::write(file, root.to_string_lossy().as_bytes()).ok();
+    let lines: Vec<_> = recent.iter().map(|path| path.to_string_lossy()).collect();
+    std::fs::write(file, lines.join("\n")).ok();
 }
 
 /// Standard-Theme (Schwarz-Weiß) mit warmen statt kühlen Grautönen (Tailwind „stone“).
@@ -2024,18 +2169,14 @@ fn warm_theme(cx: &mut App) {
 }
 
 fn main() {
-    // Argument: Ordner (wird Wurzel) oder Datei (Elternordner wird Wurzel, Datei wird geöffnet).
-    // Ohne Argument (z. B. aus dem Finder gestartet): Dokumente-Ordner statt „/“.
-    let arg = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(default_root);
-    let arg = arg.canonicalize().unwrap_or(arg);
-    let (root, file) = if arg.is_file() {
-        let parent = arg.parent().map(Path::to_path_buf).unwrap_or_default();
-        (parent, Some(arg))
-    } else {
-        (arg, None)
+    // Argument: Ordner (wird Workspace) oder Datei (wird geöffnet, Workspace = zuletzt genutzter).
+    // Ohne Argument: zuletzt genutzter Workspace, sonst keiner – nie stillschweigend Home oder „/“.
+    let arg = std::env::args().nth(1).map(PathBuf::from).map(|arg| arg.canonicalize().unwrap_or(arg));
+    let last = || recent_workspaces().into_iter().next();
+    let (root, file) = match arg {
+        Some(arg) if arg.is_dir() => (Some(arg), None),
+        Some(arg) => (last(), Some(arg)),
+        None => (last(), None),
     };
 
     // Finder „Öffnen mit …“ / Doppelklick: Pfade kommen als file://-URLs, auch beim Start.
@@ -2085,6 +2226,7 @@ fn main() {
             Menu::new("Datei").items([
                 MenuItem::action("Neues Dokument …", NewDocument),
                 MenuItem::action("Öffnen …", Open),
+                MenuItem::action("Workspace öffnen …", OpenWorkspace),
                 MenuItem::separator(),
                 MenuItem::action("Speichern", Save),
                 MenuItem::action("Tab schließen", CloseTab),
@@ -2147,7 +2289,7 @@ fn main() {
         ]);
         cx.activate(true);
 
-        let title = window_title(&root);
+        let title = window_title(root.as_deref());
         let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
         let (window, workspace) = gpui_kit::open_window(
             WindowOptions {
@@ -2197,22 +2339,6 @@ fn path_from_file_url(url: &str) -> Option<PathBuf> {
         i += 1;
     }
     String::from_utf8(out).ok().map(PathBuf::from)
-}
-
-/// Startordner ohne Argument: aktuelles Verzeichnis, außer es ist `/` (Start aus dem Finder).
-fn default_root() -> PathBuf {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-    if cwd.parent().is_some() {
-        return cwd;
-    }
-    // Aus dem Finder gestartet: zuletzt geöffneter Ordner, sonst Home (ohne Datenschutz-Rückfrage
-    // lesbar; Dokumente/Schreibtisch fragen erst beim Aufklappen).
-    std::fs::read_to_string(notes_ui::data_dir().join("last-root"))
-        .ok()
-        .map(|s| PathBuf::from(s.trim()))
-        .filter(|dir| dir.is_dir())
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-        .unwrap_or(cwd)
 }
 
 #[cfg(test)]
