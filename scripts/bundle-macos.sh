@@ -1,5 +1,5 @@
 #!/bin/sh
-# Baut DevMark.app (Release) unter target/release/bundle/ und installiert optional nach /Applications.
+# Baut DevMark.app (Release) unter $CARGO_TARGET_DIR (sonst target)/release/bundle/ und installiert optional nach /Applications.
 #   scripts/bundle-macos.sh            # nur bauen
 #   scripts/bundle-macos.sh --install  # bauen und nach /Applications kopieren
 set -eu
@@ -7,11 +7,12 @@ cd "$(dirname "$0")/.."
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' apps/desktop/Cargo.toml | head -1)
 cargo build --release -p devmark
+target=${CARGO_TARGET_DIR:-target}
 
-app=target/release/bundle/DevMark.app
+app=$target/release/bundle/DevMark.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp target/release/devmark "$app/Contents/MacOS/devmark"
+cp "$target/release/devmark" "$app/Contents/MacOS/devmark"
 strip -x "$app/Contents/MacOS/devmark" 2>/dev/null || true
 cp apps/desktop/assets/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 
