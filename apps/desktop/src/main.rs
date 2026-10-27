@@ -16,7 +16,7 @@ use devmark_writing::templates::{DocInfo, DocType};
 use devmark_writing::{Options, compile_pdf, markdown_to_typst, render_pages};
 use gpui_kit::assets::{Assets, IconName as AssetIcon, icon_assets};
 use gpui_kit::component::{
-    ActiveTheme, IconName, Selectable, Sizable, WindowExt,
+    ActiveTheme, IconName, Selectable, Sizable, Theme, WindowExt,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Editor, EditorState, Input, InputEvent, InputState, TabSize},
@@ -25,6 +25,7 @@ use gpui_kit::component::{
     resizable::{h_resizable, resizable_panel},
     status_bar::StatusBar,
     tab::{Tab, TabBar},
+    tooltip::Tooltip,
     tree::{TreeEvent, TreeItem, TreeState, tree},
     v_flex,
 };
@@ -188,6 +189,70 @@ struct Buffer {
     assist: Option<Rc<WritingAssist>>,
     /// Platzhalter der zuletzt eingefügten Vorlage, solange Tab sie anspringt.
     tabstops: Option<Tabstops>,
+    /// Letztes Speichern (ms seit 1970): Datei-Änderungszeit bzw. Notiz-Stand.
+    saved_at: Option<i64>,
+    /// Wortzahl, Gliederung, Tags – nur bei Markdown/Typst.
+    stats: DocStats,
+}
+
+/// Überschrift für die Gliederung am rechten Rand.
+struct Heading {
+    line: u32,
+    level: usize,
+    text: String,
+}
+
+/// Wortzahl, Überschriften und `#tags` eines Textes; neu berechnet bei jeder Änderung.
+#[derive(Default)]
+struct DocStats {
+    words: usize,
+    headings: Vec<Heading>,
+    tags: Vec<String>,
+}
+
+impl DocStats {
+    fn of(syntax: Syntax, text: &str, with_tags: bool) -> Self {
+        let marker = match syntax {
+            Syntax::Markdown => '#',
+            Syntax::Typst => '=',
+        };
+        let mut headings = Vec::new();
+        let mut in_code = false;
+        for (ix, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("```") {
+                in_code = !in_code;
+                continue;
+            }
+            let level = line.chars().take_while(|&c| c == marker).count();
+            if in_code || !(1..=6).contains(&level) || !line[level..].starts_with(' ') {
+                continue;
+            }
+            let text = line[level..].trim().trim_end_matches(marker).trim();
+            if !text.is_empty() {
+                headings.push(Heading { line: ix as u32, level, text: text.to_string() });
+            }
+        }
+        Self {
+            words: text.split_whitespace().filter(|w| w.chars().any(char::is_alphanumeric)).count(),
+            headings,
+            tags: if with_tags { devmark_notes::extract_hashtags(text) } else { Vec::new() },
+        }
+    }
+}
+
+/// Textspalte im Schreib-Layout: rund 70 Zeichen.
+const WRITING_COLUMN: f32 = 720.;
+const WRITING_FONT_SIZE: f32 = 17.;
+
+/// Lesefreundliche Schrift für Fließtext; Systemschrift, wo keine Serifenschrift sicher da ist.
+fn writing_font(cx: &App) -> SharedString {
+    if cfg!(target_os = "macos") {
+        "Charter".into()
+    } else if cfg!(target_os = "windows") {
+        "Georgia".into()
+    } else {
+        cx.theme().font_family.clone()
+    }
 }
 
 impl Buffer {
@@ -494,9 +559,13 @@ impl Workspace {
             if matches!(event, InputEvent::Change) {
                 this.track_placeholders(&editor, cx);
                 let mut note_id = None;
+                let text = editor.read(cx).value();
                 if let Some(buffer) = this.buffer_for_editor(&editor) {
                     buffer.dirty = true;
                     note_id = buffer.note_id.clone();
+                    if let Some(syntax) = buffer.syntax {
+                        buffer.stats = DocStats::of(syntax, &text, note_id.is_some());
+                    }
                 }
                 if let Some(note_id) = note_id {
                     this.schedule_note_save(note_id, cx);
@@ -515,6 +584,11 @@ impl Workspace {
             Some((id, title)) => (Some(id), Some(title)),
             None => (None, None),
         };
+        // Notizen: Stand setzt `open_note` aus der Datenbank.
+        let saved_at = note_id.is_none().then(|| file_modified_ms(&path)).flatten();
+        let stats = syntax
+            .map(|syntax| DocStats::of(syntax, &editor.read(cx).value(), note_id.is_some()))
+            .unwrap_or_default();
         let pane = &mut self.panes[pane_ix];
         pane.buffers.push(Buffer {
             path,
@@ -525,6 +599,8 @@ impl Workspace {
             title,
             assist: buffer_assist,
             tabstops: None,
+            saved_at,
+            stats,
         });
         pane.active = pane.buffers.len() - 1;
         self.schedule_preview(Duration::ZERO, cx);
@@ -554,7 +630,10 @@ impl Workspace {
         };
         let content = buffer.editor.read(cx).value();
         match std::fs::write(&buffer.path, content.as_bytes()) {
-            Ok(()) => buffer.dirty = false,
+            Ok(()) => {
+                buffer.dirty = false;
+                buffer.saved_at = Some(now_ms());
+            }
             Err(err) => {
                 let message = format!(
                     "„{}“ konnte nicht gespeichert werden: {err}",
@@ -618,7 +697,10 @@ impl Workspace {
             }
             let content = buffer.editor.read(cx).value();
             match std::fs::write(&buffer.path, content.as_bytes()) {
-                Ok(()) => buffer.dirty = false,
+                Ok(()) => {
+                    buffer.dirty = false;
+                    buffer.saved_at = Some(now_ms());
+                }
                 Err(err) => {
                     ok = false;
                     window.push_notification(
@@ -1211,6 +1293,94 @@ impl Workspace {
         )
     }
 
+    /// Kopfzeile über dem Text: Tags der Notiz, Speicherstand, Wortzahl.
+    fn render_doc_header(&self, buffer: &Buffer, cx: &mut Context<Self>) -> impl IntoElement {
+        let saved = match (buffer.dirty, buffer.note_id.is_some(), buffer.saved_at) {
+            (true, true, _) => "Speichert …".to_string(),
+            (true, false, _) => "Nicht gespeichert".to_string(),
+            (false, _, Some(at)) => format!("Gespeichert {}", notes_ui::relative_time(at)),
+            (false, _, None) => String::new(),
+        };
+        let words = match buffer.stats.words {
+            1 => "1 Wort".to_string(),
+            n => format!("{n} Wörter"),
+        };
+        let filter = self.notes.as_ref().and_then(|n| n.tag_filter.clone());
+        let mut tags = h_flex().flex_1().min_w_0().flex_wrap().gap_1();
+        for (ix, tag) in buffer.stats.tags.iter().enumerate() {
+            let tag = tag.clone();
+            tags = tags.child(
+                Button::new(("doc-tag", ix))
+                    .xsmall()
+                    .ghost()
+                    .selected(filter.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(&tag)))
+                    .label(format!("#{tag}"))
+                    .tooltip("Notizen mit diesem Tag zeigen")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.sidebar = SidebarMode::Notes;
+                        this.toggle_tag_filter(&tag, cx);
+                    })),
+            );
+        }
+        h_flex()
+            .w_full()
+            .gap_2()
+            .pt_3()
+            .pb_2()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(tags)
+            .child(
+                div()
+                    .flex_none()
+                    .child(if saved.is_empty() { words } else { format!("{saved} · {words}") }),
+            )
+    }
+
+    /// Gliederung am rechten Rand: ein Strich je Überschrift, Klick springt hin.
+    fn render_outline(&self, buffer: &Buffer, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let headings = &buffer.stats.headings;
+        if headings.len() < 2 {
+            return None;
+        }
+        let cursor_line = buffer.editor.read(cx).cursor_position().line;
+        let current = headings.iter().rposition(|h| h.line <= cursor_line);
+        let mut outline = v_flex()
+            .id("outline")
+            .flex_none()
+            .w(px(32.))
+            .h_full()
+            .justify_center()
+            .items_end()
+            .pr_2()
+            .overflow_y_scroll();
+        for (ix, heading) in headings.iter().enumerate() {
+            let editor = buffer.editor.clone();
+            let line = heading.line;
+            let text = SharedString::from(heading.text.clone());
+            let width = match heading.level {
+                1 => 16.,
+                2 => 12.,
+                _ => 8.,
+            };
+            let color = if current == Some(ix) { cx.theme().foreground } else { cx.theme().muted_foreground.opacity(0.5) };
+            outline = outline.child(
+                div()
+                    .id(("outline-heading", ix))
+                    .py(px(3.))
+                    .cursor_pointer()
+                    .tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx))
+                    .on_click(move |_, window, cx| {
+                        editor.update(cx, |state, cx| {
+                            state.set_cursor_position(lsp_types::Position::new(line, 0), window, cx)
+                        });
+                    })
+                    .child(div().w(px(width)).h(px(2.)).rounded_full().bg(color)),
+            );
+        }
+        Some(outline)
+    }
+
     /// Spickzettel: alle Elemente mit Erklärung, Beispiel und „Einfügen“.
     fn render_help(&self, syntax: Syntax, cx: &mut Context<Self>) -> impl IntoElement {
         let mut list = v_flex()
@@ -1464,19 +1634,45 @@ impl Workspace {
         let body = match (self.new_doc.as_ref().filter(|_| new_doc_here), pane.buffers.get(pane.active)) {
             (Some(form), _) => self.render_new_document(form, cx).into_any_element(),
             (None, Some(buffer)) => {
-                let editor = Editor::new(&buffer.editor)
-                    .bordered(false)
-                    .p_0()
-                    .h_full()
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .text_size(cx.theme().mono_font_size);
+                let editor = Editor::new(&buffer.editor).bordered(false).p_0().h_full();
                 match buffer.syntax {
+                    // Schreib-Layout: Proportionalschrift in einer zentrierten Textspalte.
                     Some(syntax) => v_flex()
                         .size_full()
                         .child(self.render_toolbar(syntax, cx))
-                        .child(div().flex_1().min_h_0().child(editor))
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_h_0()
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .h_full()
+                                        .child(
+                                            v_flex()
+                                                .w_full()
+                                                .max_w(px(WRITING_COLUMN))
+                                                .mx_auto()
+                                                .h_full()
+                                                .px_6()
+                                                .child(self.render_doc_header(buffer, cx))
+                                                .child(
+                                                    div().flex_1().min_h_0().child(
+                                                        editor
+                                                            .font_family(writing_font(cx))
+                                                            .text_size(px(WRITING_FONT_SIZE)),
+                                                    ),
+                                                ),
+                                        ),
+                                )
+                                .children(self.render_outline(buffer, cx)),
+                        )
                         .into_any_element(),
-                    None => editor.into_any_element(),
+                    None => editor
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .text_size(cx.theme().mono_font_size)
+                        .into_any_element(),
                 }
             }
             (None, None) => v_flex()
@@ -1726,11 +1922,19 @@ fn generated_by_devmark(path: &Path) -> bool {
 }
 
 fn today() -> String {
-    let ms = std::time::SystemTime::now()
+    iso_date(now_ms())
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    iso_date(ms)
+        .unwrap_or(0)
+}
+
+fn file_modified_ms(path: &Path) -> Option<i64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    Some(modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64)
 }
 
 /// Zeitpunkt (UTC) als `14.10.2026, 20:15 UTC`.
@@ -1803,6 +2007,22 @@ fn remember_root(root: &Path) {
     std::fs::write(file, root.to_string_lossy().as_bytes()).ok();
 }
 
+/// Standard-Theme (Schwarz-Weiß) mit warmen statt kühlen Grautönen (Tailwind „stone“).
+fn warm_theme(cx: &mut App) {
+    Theme::update(cx, |theme| {
+        if theme.is_dark() {
+            return;
+        }
+        theme.sidebar = rgb(0xfafaf9).into();
+        theme.tab_bar = rgb(0xfafaf9).into();
+        theme.accent = rgb(0xf0efed).into();
+        theme.sidebar_accent = rgb(0xf0efed).into();
+        theme.border = rgb(0xe7e5e4).into();
+        theme.sidebar_border = rgb(0xe7e5e4).into();
+        theme.muted_foreground = rgb(0x78716c).into();
+    });
+}
+
 fn main() {
     // Argument: Ordner (wird Wurzel) oder Datei (Elternordner wird Wurzel, Datei wird geöffnet).
     // Ohne Argument (z. B. aus dem Finder gestartet): Dokumente-Ordner statt „/“.
@@ -1826,6 +2046,7 @@ fn main() {
     });
     app.run(move |cx| {
         gpui_kit::init(cx);
+        warm_theme(cx);
         register_typst_language();
         cx.bind_keys([
             KeyBinding::new("secondary-o", Open, None),
@@ -2003,6 +2224,20 @@ mod tests {
             Some(std::path::PathBuf::from("/Users/a/Notiz ä.md"))
         );
         assert_eq!(super::path_from_file_url("https://x"), None);
+    }
+
+    #[test]
+    fn doc_stats_outline_and_words() {
+        use devmark_writing::authoring::Syntax;
+        let markdown = "# Titel\n\nZwei Wörter - hier.\n\n```\n# kein Titel\n```\n## Unter #\n#tag ohne Leerzeichen";
+        let stats = super::DocStats::of(Syntax::Markdown, markdown, true);
+        let outline: Vec<_> = stats.headings.iter().map(|h| (h.line, h.level, h.text.as_str())).collect();
+        assert_eq!(outline, [(0, 1, "Titel"), (7, 2, "Unter")]);
+        assert_eq!(stats.words, 10);
+        assert_eq!(stats.tags, ["tag"]);
+        let typst = super::DocStats::of(Syntax::Typst, "= Kapitel\n== Abschnitt\n#set page()", false);
+        assert_eq!(typst.headings.len(), 2);
+        assert!(typst.tags.is_empty());
     }
 
     #[test]

@@ -13,7 +13,7 @@ use devmark_notes::{
 use devmark_writing::authoring::Syntax;
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::{
-    ActiveTheme, IconName, Selectable, Sizable, WindowExt,
+    ActiveTheme, Icon, IconName, Selectable, Sizable, WindowExt,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -47,7 +47,10 @@ pub enum SidebarMode {
 pub struct NoteRow {
     pub id: String,
     pub title: String,
-    pub subtitle: String,
+    /// Anfang des Textes ohne Titel, für zwei Zeilen Vorschau.
+    pub preview: String,
+    /// Letzte Änderung („vor 5 Min.“); leer bei Suchtreffern.
+    pub time: String,
     pub favorite: bool,
     pub folder_id: Option<String>,
 }
@@ -58,6 +61,8 @@ pub struct NotesState {
     pub search: Entity<InputState>,
     pub rows: Vec<NoteRow>,
     pub show_trash: bool,
+    /// Navigation „Favoriten“: nur markierte Notizen.
+    pub favorites_only: bool,
     pub save_tasks: HashMap<String, Task<()>>,
     /// Alle Tags mit Anzahl; `tag_filter` schränkt die Liste ein.
     pub tags: Vec<(String, usize)>,
@@ -123,6 +128,7 @@ impl NotesState {
             search,
             rows: Vec::new(),
             show_trash: false,
+            favorites_only: false,
             save_tasks: HashMap::new(),
             tags: Vec::new(),
             tag_filter: None,
@@ -182,13 +188,15 @@ impl Workspace {
                         folder_id: state.notes.get(&hit.id).ok().flatten().and_then(|d| d.folder_id),
                         id: hit.id,
                         title: hit.title,
-                        subtitle: hit.snippet.replace(['\n', '\r'], " "),
+                        preview: hit.snippet.replace(['\n', '\r'], " "),
+                        time: String::new(),
                     })
                     .collect()
             })
         } else {
             let filter = Filter {
                 trash: state.show_trash,
+                favorites_only: state.favorites_only && !state.show_trash,
                 tag: state.tag_filter.clone().filter(|_| !state.show_trash),
                 folder: state.folder_filter.clone().filter(|_| !state.show_trash).map(Some),
                 ..Default::default()
@@ -200,7 +208,8 @@ impl Workspace {
                     .map(|d| NoteRow {
                         id: d.id.clone(),
                         title: d.display_title(),
-                        subtitle: format!("{} · {}", relative_time(d.updated_at), preview_line(d)),
+                        preview: preview_text(d),
+                        time: relative_time(d.updated_at),
                         favorite: d.favorite,
                         folder_id: d.folder_id.clone(),
                     })
@@ -282,7 +291,11 @@ impl Workspace {
         }
         let path = self.note_path(&document);
         let title = document.display_title();
+        let updated_at = document.updated_at;
         self.open_buffer(path, document.content, Some((document.id, title)), window, cx);
+        if let Some(buffer) = self.active_buffer_mut() {
+            buffer.saved_at = Some(updated_at);
+        }
     }
 
     pub(crate) fn schedule_note_save(&mut self, id: String, cx: &mut Context<Self>) {
@@ -343,6 +356,7 @@ impl Workspace {
         for buffer in self.panes.iter_mut().flat_map(|pane| pane.buffers.iter_mut()) {
             if buffer.note_id.as_deref() == Some(id) {
                 buffer.dirty = false;
+                buffer.saved_at = Some(devmark_storage_now());
                 buffer.title = Some(title.clone());
             }
         }
@@ -390,8 +404,15 @@ impl Workspace {
     }
 
     pub(crate) fn toggle_trash(&mut self, _: &ToggleTrash, _window: &mut Window, cx: &mut Context<Self>) {
+        let trash = !self.notes.as_ref().is_some_and(|s| s.show_trash);
+        self.show_note_view(trash, false, cx);
+    }
+
+    /// Navigation: Notizen, Favoriten oder Papierkorb.
+    fn show_note_view(&mut self, trash: bool, favorites: bool, cx: &mut Context<Self>) {
         if let Some(state) = self.notes.as_mut() {
-            state.show_trash = !state.show_trash;
+            state.show_trash = trash;
+            state.favorites_only = favorites;
             self.sidebar = SidebarMode::Notes;
         }
         self.refresh_notes(cx);
@@ -556,7 +577,7 @@ impl Workspace {
         Some(list.into_any_element())
     }
 
-    fn toggle_tag_filter(&mut self, tag: &str, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_tag_filter(&mut self, tag: &str, cx: &mut Context<Self>) {
         if let Some(state) = self.notes.as_mut() {
             state.tag_filter = match &state.tag_filter {
                 Some(current) if current.eq_ignore_ascii_case(tag) => None,
@@ -659,29 +680,49 @@ impl Workspace {
     // ---- Darstellung ----
 
     pub(crate) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let switcher = h_flex()
-            .gap_1()
-            .p_1()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(
-                Button::new("mode-files")
-                    .ghost()
-                    .xsmall()
-                    .label("Dateien")
-                    .selected(self.sidebar == SidebarMode::Files)
-                    .tooltip_with_action("Dateien des Ordners", &ShowFiles, None)
-                    .on_click(cx.listener(|this, _, window, cx| this.show_files(&ShowFiles, window, cx))),
-            )
-            .child(
-                Button::new("mode-notes")
-                    .ghost()
-                    .xsmall()
-                    .label("Notizen")
-                    .selected(self.sidebar == SidebarMode::Notes)
-                    .tooltip_with_action("Notizen durchsuchen und schreiben", &ShowNotes, None)
-                    .on_click(cx.listener(|this, _, window, cx| this.show_notes(&ShowNotes, window, cx))),
+        let (trash, favorites) = self.notes.as_ref().map(|s| (s.show_trash, s.favorites_only)).unwrap_or_default();
+        let current = match self.sidebar {
+            SidebarMode::Files => 0,
+            SidebarMode::Notes if trash => 3,
+            SidebarMode::Notes if favorites => 2,
+            SidebarMode::Notes => 1,
+        };
+        let entries = [
+            (AssetIcon::FolderTree, "Dateien"),
+            (AssetIcon::NotebookPen, "Notizen"),
+            (AssetIcon::Star, "Favoriten"),
+            (AssetIcon::Trash, "Papierkorb"),
+        ];
+        let mut nav = v_flex().p_2().gap_0p5().border_b_1().border_color(cx.theme().border);
+        for (ix, (icon, label)) in entries.into_iter().enumerate() {
+            // Ohne Datenbank gibt es nur Dateien.
+            if ix > 0 && self.notes.is_none() {
+                break;
+            }
+            nav = nav.child(
+                h_flex()
+                    .id(("nav", ix))
+                    .role(Role::Button)
+                    .aria_label(label)
+                    .aria_selected(current == ix)
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded(cx.theme().radius)
+                    .cursor_pointer()
+                    .text_sm()
+                    .when(current == ix, |this| this.bg(cx.theme().accent).font_weight(FontWeight::MEDIUM))
+                    .hover(|this| this.bg(cx.theme().accent))
+                    .child(Icon::new(icon).small().text_color(cx.theme().muted_foreground))
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, window, cx| match ix {
+                        0 => this.show_files(&ShowFiles, window, cx),
+                        1 => this.show_note_view(false, false, cx),
+                        2 => this.show_note_view(false, true, cx),
+                        _ => this.show_note_view(true, false, cx),
+                    })),
             );
+        }
         let body = match self.sidebar {
             SidebarMode::Files => self.render_file_tree(cx).into_any_element(),
             SidebarMode::Notes => self.render_notes_list(cx).into_any_element(),
@@ -689,7 +730,7 @@ impl Workspace {
         v_flex()
             .size_full()
             .bg(cx.theme().sidebar)
-            .child(switcher)
+            .child(nav)
             .child(div().flex_1().min_h_0().child(body))
     }
 
@@ -718,10 +759,12 @@ impl Workspace {
                 "Der Papierkorb ist leer."
             } else if !state.search.read(cx).value().trim().is_empty() {
                 "Nichts gefunden."
+            } else if state.favorites_only {
+                "Noch keine Favoriten. Der Stern an einer Notiz markiert sie."
             } else if state.folder_filter.is_some() {
-                "Dieser Ordner ist leer. „Neu“ legt hier eine Notiz an."
+                "Dieser Ordner ist leer. Der Stift neben der Suche legt hier eine Notiz an."
             } else {
-                "Noch keine Notizen. „Neu“ oder Cmd-Shift-N legt eine an."
+                "Noch keine Notizen. Der Stift neben der Suche oder Cmd-Shift-N legt eine an."
             };
             list = list.child(div().p_2().text_sm().text_color(cx.theme().muted_foreground).child(hint));
         }
@@ -805,23 +848,37 @@ impl Workspace {
                             })),
                     )
             };
+            // Aktionen nur bei Mauszeiger oder Auswahl, im Papierkorb immer.
+            let group = SharedString::from(format!("note-row-{ix}"));
+            let actions = div()
+                .absolute()
+                .top_1()
+                .right_1()
+                .rounded(cx.theme().radius)
+                .bg(cx.theme().accent)
+                .when(!selected && !state.show_trash, |this| {
+                    this.invisible().group_hover(group.clone(), |this| this.visible())
+                })
+                .child(actions);
             list = list.child(
                 v_flex()
                     .id(("note", ix))
+                    .group(group)
+                    .relative()
                     .role(Role::ListItem)
                     .aria_label(row.title.clone())
                     .aria_selected(selected)
                     .w_full()
-                    .px_2()
-                    .py_1()
+                    .gap_0p5()
+                    .px_3()
+                    .py_2()
                     .rounded(cx.theme().radius)
                     .cursor_pointer()
                     .bg(if selected { cx.theme().accent } else { cx.theme().transparent })
                     .hover(|this| this.bg(cx.theme().accent))
                     .child(
                         h_flex()
-                            .justify_between()
-                            .gap_1()
+                            .gap_2()
                             .child(
                                 div()
                                     .flex_1()
@@ -833,17 +890,24 @@ impl Workspace {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(row.title.clone()),
                             )
-                            .child(actions),
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(row.time.clone()),
+                            ),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .child(row.subtitle.clone()),
-                    )
+                    .when(!row.preview.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .line_clamp(2)
+                                .child(row.preview.clone()),
+                        )
+                    })
+                    .child(actions)
                     .when(!state.show_trash, |this| {
                         this.on_click(cx.listener(move |this, _, window, cx| this.open_note(id.clone(), window, cx)))
                     }),
@@ -855,28 +919,17 @@ impl Workspace {
                 v_flex()
                     .p_2()
                     .gap_2()
-                    .child(Input::new(&state.search).small().cleanable(true))
                     .child(
                         h_flex()
                             .gap_1()
+                            .child(div().flex_1().min_w_0().child(Input::new(&state.search).small().cleanable(true)))
                             .child(
                                 Button::new("new-note")
                                     .small()
-                                    .icon(AssetIcon::Plus)
-                                    .label("Neu")
+                                    .ghost()
+                                    .icon(AssetIcon::SquarePen)
                                     .tooltip_with_action("Neue Notiz", &NewNote, None)
                                     .on_click(cx.listener(|this, _, window, cx| this.new_note(&NewNote, window, cx))),
-                            )
-                            .child(div().flex_1())
-                            .child(
-                                Button::new("show-trash")
-                                    .ghost()
-                                    .small()
-                                    .icon(AssetIcon::Trash)
-                                    .label("Papierkorb")
-                                    .selected(state.show_trash)
-                                    .tooltip_with_action("Papierkorb anzeigen", &ToggleTrash, None)
-                                    .on_click(cx.listener(|this, _, window, cx| this.toggle_trash(&ToggleTrash, window, cx))),
                             ),
                     )
                     .when(!state.tags.is_empty() && !state.show_trash, |this| {
@@ -1065,22 +1118,23 @@ fn folder_tree(folders: &[Folder]) -> Vec<(usize, &Folder)> {
 }
 
 /// Erste Inhaltszeile nach dem Titel als Vorschau.
-fn preview_line(document: &Document) -> String {
+fn preview_text(document: &Document) -> String {
     let title = document.display_title();
     devmark_notes::strip_note_links(&document.content)
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && *l != "---")
         .map(|l| l.trim_start_matches(['#', '=', '-', '*', '>']).trim())
-        .find(|l| !l.is_empty() && *l != title)
-        .unwrap_or("")
+        .filter(|l| !l.is_empty() && *l != title)
+        .collect::<Vec<_>>()
+        .join(" ")
         .chars()
-        .take(80)
+        .take(160)
         .collect()
 }
 
 /// „gerade eben“, „vor 5 Min.“, „vor 3 Std.“, „vor 2 Tagen“ bzw. Datum.
-fn relative_time(ms: i64) -> String {
+pub(crate) fn relative_time(ms: i64) -> String {
     let diff = (devmark_storage_now() - ms).max(0) / 1000;
     match diff {
         0..=59 => "gerade eben".into(),
