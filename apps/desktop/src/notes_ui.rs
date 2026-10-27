@@ -9,7 +9,7 @@ use std::time::Duration;
 use devmark_notes::{Document, Filter, Folder, Moves, Notes, Revision, create_backup, import_legacy, list_backups};
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::{
-    ActiveTheme, Icon, IconName, Selectable, Sizable, WindowExt,
+    ActiveTheme, Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -22,7 +22,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 
 use crate::assist::NoteIndex;
 use crate::{
-    BackupNow, ChooseVault, NewNote, NoteToWorkspace, RevealVault, SelectionToNote, ShowFiles, ShowHistory,
+    BackupNow, ChooseVault, NewDocument, NewNote, NoteToWorkspace, RevealVault, SelectionToNote, ShowFiles, ShowHistory,
     ShowNotes, ToggleTrash, Workspace,
 };
 
@@ -530,6 +530,8 @@ impl Workspace {
         if let Some(state) = self.notes.as_mut() {
             state.show_trash = trash;
             state.favorites_only = favorites;
+            state.folder_filter = None;
+            state.tag_filter = None;
             self.sidebar = SidebarMode::Notes;
         }
         self.refresh_notes(cx);
@@ -717,6 +719,9 @@ impl Workspace {
         if let Some(state) = self.notes.as_mut() {
             state.folder_filter = folder;
             state.show_trash = false;
+            state.favorites_only = false;
+            state.tag_filter = None;
+            self.sidebar = SidebarMode::Notes;
         }
         self.refresh_notes(cx);
     }
@@ -826,59 +831,157 @@ impl Workspace {
 
     // ---- Darstellung ----
 
-    pub(crate) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (trash, favorites) = self.notes.as_ref().map(|s| (s.show_trash, s.favorites_only)).unwrap_or_default();
-        let current = match self.sidebar {
-            SidebarMode::Files => 0,
-            SidebarMode::Notes if trash => 3,
-            SidebarMode::Notes if favorites => 2,
-            SidebarMode::Notes => 1,
-        };
-        let entries = [
-            (AssetIcon::FolderTree, "Dateien"),
-            (AssetIcon::NotebookPen, "Notizen"),
-            (AssetIcon::Star, "Favoriten"),
-            (AssetIcon::Trash, "Papierkorb"),
-        ];
-        let mut nav = v_flex().p_2().gap_0p5().border_b_1().border_color(cx.theme().border);
-        for (ix, (icon, label)) in entries.into_iter().enumerate() {
-            // Ohne Datenbank gibt es nur Dateien.
-            if ix > 0 && self.notes.is_none() {
-                break;
+    /// Linke Spalte: Workspace, Notiz-Ansichten, Notizordner, Tags, Dateien, Suche, Papierkorb.
+    pub(crate) fn render_nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let notes_view = self.sidebar == SidebarMode::Notes;
+        let state = self.notes.as_ref();
+        let (trash, favorites, folder, tag) = state
+            .map(|s| (s.show_trash, s.favorites_only, s.folder_filter.clone(), s.tag_filter.clone()))
+            .unwrap_or_default();
+        let plain = notes_view && !trash && !favorites && folder.is_none() && tag.is_none();
+
+        let mut body = v_flex().id("nav-body").flex_1().min_h_0().overflow_y_scroll().px_2().pb_2().gap_0p5();
+        if let Some(state) = state {
+            body = body
+                .child(
+                    nav_row("nav-notes", 0, plain, cx)
+                        .child(nav_icon(AssetIcon::NotebookPen, cx))
+                        .child("Notizen")
+                        .on_click(cx.listener(|this, _, _, cx| this.show_note_view(false, false, cx))),
+                )
+                .child(
+                    nav_row("nav-favorites", 0, notes_view && favorites && !trash, cx)
+                        .child(nav_icon(AssetIcon::Star, cx))
+                        .child("Favoriten")
+                        .on_click(cx.listener(|this, _, _, cx| this.show_note_view(false, true, cx))),
+                )
+                .child(self.render_folders(state, &folder_tree(&state.folders), cx));
+            if !state.tags.is_empty() {
+                body = body.child(nav_section("Tags", None, cx));
+                for (ix, (name, count)) in state.tags.iter().enumerate() {
+                    let selected = notes_view && !trash && tag.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(name));
+                    let name = name.clone();
+                    body = body.child(
+                        nav_row(("nav-tag", ix), 0, selected, cx)
+                            .child(div().w(px(16.)).text_color(cx.theme().muted_foreground).child("#"))
+                            .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name.clone()))
+                            .child(div().text_xs().text_color(cx.theme().muted_foreground).child(count.to_string()))
+                            .on_click(cx.listener(move |this, _, _, cx| this.select_tag(&name, cx))),
+                    );
+                }
             }
-            nav = nav.child(
-                h_flex()
-                    .id(("nav", ix))
-                    .role(Role::Button)
-                    .aria_label(label)
-                    .aria_selected(current == ix)
-                    .gap_2()
-                    .px_2()
-                    .py_1()
-                    .rounded(cx.theme().radius)
-                    .cursor_pointer()
-                    .text_sm()
-                    .when(current == ix, |this| this.bg(cx.theme().accent).font_weight(FontWeight::MEDIUM))
-                    .hover(|this| this.bg(cx.theme().accent))
-                    .child(Icon::new(icon).small().text_color(cx.theme().muted_foreground))
-                    .child(label)
-                    .on_click(cx.listener(move |this, _, window, cx| match ix {
-                        0 => this.show_files(&ShowFiles, window, cx),
-                        1 => this.show_note_view(false, false, cx),
-                        2 => this.show_note_view(false, true, cx),
-                        _ => this.show_note_view(true, false, cx),
-                    })),
-            );
         }
-        let body = match self.sidebar {
-            SidebarMode::Files => self.render_files(cx).into_any_element(),
-            SidebarMode::Notes => self.render_notes_list(cx).into_any_element(),
-        };
+        body = body.child(nav_section("Workspace", None, cx)).child(
+            nav_row("nav-files", 0, self.sidebar == SidebarMode::Files, cx)
+                .child(nav_icon(AssetIcon::FolderTree, cx))
+                .child("Dateien")
+                .on_click(cx.listener(|this, _, window, cx| this.show_files(&ShowFiles, window, cx))),
+        );
+
+        let mut footer = v_flex().p_2().gap_0p5().border_t_1().border_color(cx.theme().border);
+        if self.notes.is_some() {
+            footer = footer
+                .child(
+                    nav_row("nav-search", 0, false, cx)
+                        .child(nav_icon(AssetIcon::Search, cx))
+                        .child("Suchen")
+                        .on_click(cx.listener(|this, _, window, cx| this.show_notes(&ShowNotes, window, cx))),
+                )
+                .child(
+                    nav_row("nav-trash", 0, notes_view && trash, cx)
+                        .child(nav_icon(AssetIcon::Trash, cx))
+                        .child("Papierkorb")
+                        .on_click(cx.listener(|this, _, _, cx| this.show_note_view(true, false, cx))),
+                );
+        }
         v_flex()
             .size_full()
             .bg(cx.theme().sidebar)
-            .child(nav)
+            .child(div().p_2().child(self.render_workspace_switcher(cx)))
+            .child(body)
+            .child(footer)
+    }
+
+    /// Mittlere Spalte: Notizliste oder Dateibaum mit Überschrift.
+    pub(crate) fn render_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (title, body) = match self.sidebar {
+            SidebarMode::Files => (
+                self.root.as_deref().map(crate::file_name).unwrap_or_else(|| "Dateien".into()),
+                self.render_files(cx).into_any_element(),
+            ),
+            SidebarMode::Notes => (self.list_title(), self.render_notes_list(cx).into_any_element()),
+        };
+        let action = match self.sidebar {
+            SidebarMode::Notes if self.notes.as_ref().is_some_and(|s| !s.show_trash) => Some(
+                Button::new("new-note")
+                    .small()
+                    .ghost()
+                    .icon(AssetIcon::SquarePen)
+                    .tooltip_with_action("Neue Notiz", &NewNote, None)
+                    .on_click(cx.listener(|this, _, window, cx| this.new_note(&NewNote, window, cx))),
+            ),
+            SidebarMode::Files if self.root.is_some() => Some(
+                Button::new("new-file")
+                    .small()
+                    .ghost()
+                    .icon(AssetIcon::FilePlus)
+                    .tooltip_with_action("Neues Dokument aus Vorlage", &NewDocument, None)
+                    .on_click(cx.listener(|this, _, window, cx| this.new_document(&NewDocument, window, cx))),
+            ),
+            _ => None,
+        };
+        v_flex()
+            .size_full()
+            .border_r_1()
+            .border_color(cx.theme().border)
+            .child(
+                h_flex()
+                    .px_4()
+                    .pt_3()
+                    .pb_1()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .text_xl()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(title),
+                    )
+                    .children(action),
+            )
             .child(div().flex_1().min_h_0().child(body))
+    }
+
+    /// Überschrift der Notizliste nach Auswahl in der Navigation.
+    fn list_title(&self) -> String {
+        let Some(state) = self.notes.as_ref() else {
+            return "Notizen".into();
+        };
+        if state.show_trash {
+            "Papierkorb".into()
+        } else if state.favorites_only {
+            "Favoriten".into()
+        } else if let Some(tag) = &state.tag_filter {
+            format!("#{tag}")
+        } else if let Some(folder) = state.folder_filter.as_ref().and_then(|id| state.folders.iter().find(|f| f.id == *id)) {
+            folder.name.clone()
+        } else {
+            "Notizen".into()
+        }
+    }
+
+    fn select_tag(&mut self, tag: &str, cx: &mut Context<Self>) {
+        if let Some(state) = self.notes.as_mut() {
+            state.folder_filter = None;
+            state.favorites_only = false;
+            state.show_trash = false;
+            self.sidebar = SidebarMode::Notes;
+        }
+        self.toggle_tag_filter(tag, cx);
     }
 
     fn render_notes_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -887,7 +990,7 @@ impl Workspace {
                 .p_3()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
-                .child("Notizen sind nicht verfügbar (Datenbank konnte nicht geöffnet werden).")
+                .child("Notizen sind nicht verfügbar (Notizordner konnte nicht geöffnet werden).")
                 .into_any_element();
         };
         let active_note = self.active_buffer().and_then(|b| b.note_id.clone());
@@ -896,7 +999,7 @@ impl Workspace {
         let move_targets: Rc<Vec<(Option<String>, String)>> = Rc::new(if tree.is_empty() {
             Vec::new()
         } else {
-            std::iter::once((None, "Kein Ordner".to_string()))
+            std::iter::once((None, "Oberste Ebene".to_string()))
                 .chain(tree.iter().map(|(depth, f)| (Some(f.id.clone()), format!("{}{}", "   ".repeat(*depth), f.name))))
                 .collect()
         });
@@ -1062,98 +1165,27 @@ impl Workspace {
         }
         v_flex()
             .size_full()
-            .child(
-                v_flex()
-                    .p_2()
-                    .gap_2()
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .child(div().flex_1().min_w_0().child(Input::new(&state.search).small().cleanable(true)))
-                            .child(
-                                Button::new("new-note")
-                                    .small()
-                                    .ghost()
-                                    .icon(AssetIcon::SquarePen)
-                                    .tooltip_with_action("Neue Notiz", &NewNote, None)
-                                    .on_click(cx.listener(|this, _, window, cx| this.new_note(&NewNote, window, cx))),
-                            ),
-                    )
-                    .when(!state.tags.is_empty() && !state.show_trash, |this| {
-                        let mut chips = h_flex().flex_wrap().gap_1();
-                        for (ix, (tag, count)) in state.tags.iter().enumerate() {
-                            let selected = state.tag_filter.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(tag));
-                            let tag = tag.clone();
-                            chips = chips.child(
-                                Button::new(("tag", ix))
-                                    .xsmall()
-                                    .ghost()
-                                    .selected(selected)
-                                    .label(format!("#{tag} {count}"))
-                                    .tooltip("Nach Tag filtern (nochmals klicken: alle)")
-                                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_tag_filter(&tag, cx))),
-                            );
-                        }
-                        this.child(chips)
-                    })
-                    .when(!state.show_trash, |this| this.child(self.render_folders(state, &tree, cx))),
-            )
+            .child(div().px_3().py_2().child(Input::new(&state.search).small().cleanable(true)))
             .child(list)
-            .when_some(active_note.filter(|_| !state.show_trash), |this, note| {
-                this.children(self.render_backlinks(state, &note, cx))
-            })
             .into_any_element()
     }
 
+    /// Notizordner als Baum in der Navigation; der ausgewählte lässt sich umbenennen/auflösen.
     fn render_folders(&self, state: &NotesState, tree: &[(usize, &Folder)], cx: &mut Context<Self>) -> impl IntoElement {
-        let row = |id: ElementId, depth: usize, selected: bool, cx: &mut Context<Self>| {
-            h_flex()
-                .id(id)
-                .role(Role::ListItem)
-                .aria_selected(selected)
-                .w_full()
-                .gap_1p5()
-                .pl(px(8. + 14. * depth as f32))
-                .pr_1()
-                .py_0p5()
-                .min_h(px(26.))
-                .rounded(cx.theme().radius)
-                .cursor_pointer()
-                .text_sm()
-                .bg(if selected { cx.theme().accent } else { cx.theme().transparent })
-                .hover(|this| this.bg(cx.theme().accent))
-        };
-        let mut folders = v_flex()
-            .gap_0p5()
-            .child(
-                h_flex()
-                    .justify_between()
-                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Ordner"))
-                    .child(
-                        Button::new("new-folder")
-                            .ghost()
-                            .xsmall()
-                            .icon(AssetIcon::FolderPlus)
-                            .tooltip(if state.folder_filter.is_some() {
-                                "Neuer Unterordner im ausgewählten Ordner"
-                            } else {
-                                "Neuer Ordner"
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| this.new_folder(window, cx))),
-                    ),
-            )
-            .child(
-                row("folder-all".into(), 0, state.folder_filter.is_none(), cx)
-                    .child(IconName::Inbox)
-                    .child("Alle Notizen")
-                    .on_click(cx.listener(|this, _, _, cx| this.select_folder(None, cx))),
-            );
+        let new_folder = Button::new("new-folder")
+            .ghost()
+            .xsmall()
+            .icon(AssetIcon::FolderPlus)
+            .tooltip(if state.folder_filter.is_some() { "Neuer Unterordner im ausgewählten Ordner" } else { "Neuer Ordner" })
+            .on_click(cx.listener(|this, _, window, cx| this.new_folder(window, cx)));
+        let mut folders = v_flex().gap_0p5().child(nav_section("Notizordner", Some(new_folder.into_any_element()), cx));
+        let notes_view = self.sidebar == SidebarMode::Notes && !state.show_trash;
         for (ix, (depth, folder)) in tree.iter().enumerate() {
-            let selected = state.folder_filter.as_deref() == Some(folder.id.as_str());
+            let selected = notes_view && state.folder_filter.as_deref() == Some(folder.id.as_str());
             let renaming = state.renaming.as_ref().filter(|(id, _, _)| *id == folder.id);
             let id = folder.id.clone();
-            let mut item = row(("folder", ix).into(), *depth, selected, cx)
-                .child(if selected { IconName::FolderOpen } else { IconName::Folder });
+            let mut item = nav_row(("folder", ix), *depth, selected, cx)
+                .child(nav_icon(if selected { AssetIcon::FolderOpen } else { AssetIcon::Folder }, cx));
             item = match renaming {
                 Some((_, input, _)) => item.child(div().flex_1().child(Input::new(input).xsmall())),
                 None => item
@@ -1183,7 +1215,7 @@ impl Workspace {
                                 .ghost()
                                 .xsmall()
                                 .icon(AssetIcon::Trash)
-                                .tooltip("Ordner löschen (Notizen bleiben erhalten)")
+                                .tooltip("Ordner auflösen (Notizen bleiben erhalten)")
                                 .on_click(cx.listener({
                                     let id = id.clone();
                                     move |this, _, window, cx| {
@@ -1201,7 +1233,7 @@ impl Workspace {
     }
 
     /// Notizen, die auf die aktive Notiz verweisen.
-    fn render_backlinks(&self, state: &NotesState, note: &str, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+    pub(crate) fn render_backlinks(&self, state: &NotesState, note: &str, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let backlinks = state.notes.backlinks(note).ok().filter(|b| !b.is_empty())?;
         let mut section = v_flex()
             .id("backlinks")
@@ -1239,6 +1271,40 @@ impl Workspace {
         }
         Some(section)
     }
+}
+
+/// Zeile der Navigation (Ansicht, Ordner, Tag).
+fn nav_row(id: impl Into<ElementId>, depth: usize, selected: bool, cx: &App) -> Stateful<Div> {
+    h_flex()
+        .id(id)
+        .role(Role::ListItem)
+        .aria_selected(selected)
+        .w_full()
+        .gap_2()
+        .pl(px(8. + 14. * depth as f32))
+        .pr_1()
+        .min_h(px(30.))
+        .rounded(cx.theme().radius)
+        .cursor_pointer()
+        .text_sm()
+        .when(selected, |this| this.bg(cx.theme().sidebar_accent).font_weight(FontWeight::MEDIUM))
+        .hover(|this| this.bg(cx.theme().sidebar_accent))
+}
+
+fn nav_icon(icon: AssetIcon, cx: &App) -> Icon {
+    Icon::new(icon).small().text_color(cx.theme().muted_foreground)
+}
+
+/// Abschnittsüberschrift der Navigation, optional mit Knopf rechts.
+fn nav_section(label: &'static str, action: Option<AnyElement>, cx: &App) -> impl IntoElement {
+    h_flex()
+        .justify_between()
+        .pl_2()
+        .pt_4()
+        .pb_1()
+        .min_h(px(24.))
+        .child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(cx.theme().muted_foreground).child(label))
+        .children(action)
 }
 
 /// Ordner als Baum in Anzeigereihenfolge: (Tiefe, Ordner). Verwaiste Ordner (Eltern gelöscht,

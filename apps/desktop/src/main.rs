@@ -43,6 +43,8 @@ actions!(
         OpenWorkspace,
         Save,
         ToggleSplit,
+        ToggleList,
+        ToggleFocus,
         CloseTab,
         Quit,
         NewDocument,
@@ -128,6 +130,7 @@ icon_assets!(
         FolderOpen,
         ChevronsUpDown,
         FileSymlink,
+        SquarePen,
     ]
 );
 
@@ -340,6 +343,10 @@ struct Workspace {
     panes: Vec<Pane>,
     active_pane: usize,
     split: bool,
+    /// Mittlere Spalte (Notizliste/Dateibaum) sichtbar.
+    show_list: bool,
+    /// Fokusmodus: nur der Text, Navigation und Liste ausgeblendet.
+    focus_mode: bool,
     show_help: bool,
     show_preview: bool,
     preview: Preview,
@@ -415,6 +422,8 @@ impl Workspace {
             panes: vec![Pane::default(), Pane::default()],
             active_pane: 0,
             split: false,
+            show_list: true,
+            focus_mode: false,
             show_help: false,
             show_preview: false,
             preview: Preview::default(),
@@ -1223,10 +1232,10 @@ impl Workspace {
 
     // ---- Darstellung ----
 
-    /// Workspace-Kopf (Name + Wechsel) und Dateibaum; ohne Workspace eine Auswahl.
+    /// Dateibaum des Workspace; ohne Workspace eine Auswahl.
     fn render_files(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let recent = recent_workspaces();
-        let Some(root) = self.root.clone() else {
+        if self.root.is_none() {
+            let recent = recent_workspaces();
             let mut body = v_flex()
                 .p_3()
                 .gap_3()
@@ -1262,31 +1271,35 @@ impl Workspace {
                 }
             }
             return body.into_any_element();
-        };
+        }
+        self.render_file_tree(cx).into_any_element()
+    }
 
+    /// Kopf der Navigation: aktueller Workspace, zuletzt geöffnete, „Ordner öffnen …“.
+    fn render_workspace_switcher(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let recent = recent_workspaces();
+        let root = self.root.clone();
         let workspace = cx.entity().downgrade();
-        let header = h_flex().px_2().pt_2().child(
-            Button::new("workspace-switch")
-                .ghost()
-                .small()
-                .icon(AssetIcon::ChevronsUpDown)
-                .label(file_name(&root))
-                .tooltip(tilde(&root))
-                .dropdown_menu(move |mut menu, _, _| {
-                    for path in recent.iter().filter(|path| **path != root) {
-                        let (workspace, path) = (workspace.clone(), path.clone());
-                        menu = menu.item(PopupMenuItem::new(tilde(&path)).on_click(move |_, window, cx| {
-                            workspace.update(cx, |this, cx| this.set_root(path.clone(), window, cx)).ok();
-                        }));
-                    }
-                    menu.separator().menu("Ordner öffnen …", Box::new(OpenWorkspace))
-                }),
-        );
-        v_flex()
-            .size_full()
-            .child(header)
-            .child(div().flex_1().min_h_0().child(self.render_file_tree(cx)))
-            .into_any_element()
+        Button::new("workspace-switch")
+            .ghost()
+            .small()
+            .w_full()
+            .justify_start()
+            .icon(AssetIcon::ChevronsUpDown)
+            .label(root.as_deref().map(file_name).unwrap_or_else(|| "Kein Workspace".into()))
+            .tooltip(root.as_deref().map(tilde).unwrap_or_else(|| "Workspace wählen".into()))
+            .dropdown_menu(move |mut menu, _, _| {
+                for path in recent.iter().filter(|path| Some(*path) != root.as_ref()) {
+                    let (workspace, path) = (workspace.clone(), path.clone());
+                    menu = menu.item(PopupMenuItem::new(tilde(&path)).on_click(move |_, window, cx| {
+                        workspace.update(cx, |this, cx| this.set_root(path.clone(), window, cx)).ok();
+                    }));
+                }
+                if !recent.is_empty() {
+                    menu = menu.separator();
+                }
+                menu.menu("Ordner öffnen …", Box::new(OpenWorkspace))
+            })
     }
 
     fn render_file_tree(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1320,9 +1333,7 @@ impl Workspace {
             })
         })
         .text_sm()
-        .p_1()
-        .bg(cx.theme().sidebar)
-        .text_color(cx.theme().sidebar_foreground)
+        .px_2()
         .h_full()
     }
 
@@ -1767,7 +1778,8 @@ impl Workspace {
                     // Schreib-Layout: Proportionalschrift in einer zentrierten Textspalte.
                     Some(syntax) => v_flex()
                         .size_full()
-                        .child(self.render_toolbar(syntax, cx))
+                        // Notizen ohne Formatleiste: `/`, Tastenkürzel und Menüs reichen.
+                        .when(buffer.note_id.is_none(), |this| this.child(self.render_toolbar(syntax, cx)))
                         .child(
                             h_flex()
                                 .flex_1()
@@ -1791,7 +1803,10 @@ impl Workspace {
                                                             .font_family(writing_font(cx))
                                                             .text_size(px(WRITING_FONT_SIZE)),
                                                     ),
-                                                ),
+                                                )
+                                                .children(buffer.note_id.as_deref().and_then(|id| {
+                                                    self.notes.as_ref().and_then(|state| self.render_backlinks(state, id, cx))
+                                                })),
                                         ),
                                 )
                                 .children(self.render_outline(buffer, cx)),
@@ -1901,6 +1916,15 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::quit))
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::toggle_split))
+            .on_action(cx.listener(|this, _: &ToggleList, _, cx| {
+                this.show_list = !this.show_list;
+                this.focus_mode = false;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ToggleFocus, _, cx| {
+                this.focus_mode = !this.focus_mode;
+                cx.notify();
+            }))
             .on_action(cx.listener(Self::toggle_help))
             .on_action(cx.listener(Self::toggle_preview))
             .on_action(cx.listener(Self::new_note))
@@ -1944,17 +1968,15 @@ impl Render for Workspace {
             InsertOutline => Format::Outline,
         });
 
-        root.child(
-            div().flex_1().min_h_0().child(
-                h_resizable("workspace-split")
-                    .child(
-                        resizable_panel()
-                            .size(px(260.))
-                            .child(self.render_sidebar(cx)),
-                    )
-                    .child(resizable_panel().child(main)),
-            ),
-        )
+        // Navigation | Liste | Inhalt (wie die TK-Vorlage); Fokusmodus nur Inhalt.
+        let mut columns = h_resizable("workspace-split");
+        if !self.focus_mode {
+            columns = columns.child(resizable_panel().size(px(220.)).child(self.render_nav(cx)));
+            if self.show_list {
+                columns = columns.child(resizable_panel().size(px(300.)).child(self.render_list(cx)));
+            }
+        }
+        root.child(div().flex_1().min_h_0().child(columns.child(resizable_panel().child(main))))
         .child(
             StatusBar::new().left(status).right(
                 h_flex()
@@ -2178,6 +2200,8 @@ fn main() {
             KeyBinding::new("secondary-s", Save, None),
             KeyBinding::new("secondary-w", CloseTab, None),
             KeyBinding::new("secondary-\\", ToggleSplit, None),
+            KeyBinding::new("secondary-shift-l", ToggleList, None),
+            KeyBinding::new("secondary-shift-enter", ToggleFocus, None),
             KeyBinding::new("secondary-q", Quit, None),
             KeyBinding::new("secondary-shift-/", ToggleHelp, None),
             KeyBinding::new("secondary-shift-v", TogglePreview, None),
@@ -2263,6 +2287,8 @@ fn main() {
                 MenuItem::action("Dateien", ShowFiles),
                 MenuItem::action("Notizen", ShowNotes),
                 MenuItem::separator(),
+                MenuItem::action("Liste ein/aus", ToggleList),
+                MenuItem::action("Fokusmodus", ToggleFocus),
                 MenuItem::action("Split umschalten", ToggleSplit),
                 MenuItem::action("Vorschau", TogglePreview),
                 MenuItem::action("Spickzettel", ToggleHelp),

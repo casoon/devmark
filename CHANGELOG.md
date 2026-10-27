@@ -11,7 +11,8 @@ Alle nennenswerten Änderungen an DevMark stehen hier. DevMark folgt
 - **Schreiben:** Gliederung am rechten Rand – ein Strich je Überschrift, Klick springt hin.
 - **Notizen:** Navigation „Favoriten“ zeigt nur markierte Notizen.
 - **Notizen:** Menü Notizen → „Notiz im Workspace speichern …“ legt die aktive Notiz als Markdown-Datei im Workspace ab, „Notizordner im Finder zeigen“ und „Notizordner wählen …“ führen zum bzw. wechseln den Ordner.
-- **Workspace:** Kopf über dem Dateibaum mit Ordnername, zuletzt geöffneten Workspaces und „Ordner öffnen …“; Menü Datei → „Workspace öffnen …“.
+- **Workspace:** Umschalter oben in der Navigation mit Ordnername, zuletzt geöffneten Workspaces und „Ordner öffnen …“; Menü Datei → „Workspace öffnen …“.
+- **Oberfläche:** Ansicht → „Liste ein/aus“ (Cmd/Ctrl-Shift-L) blendet die mittlere Spalte aus, „Fokusmodus“ (Cmd/Ctrl-Shift-Enter) zeigt nur den Text.
 
 ### Changed
 
@@ -21,7 +22,7 @@ Alle nennenswerten Änderungen an DevMark stehen hier. DevMark folgt
 - **Workspace:** Ohne Ordner-Argument startet DevMark im zuletzt genutzten Workspace oder ohne Workspace, nicht mehr im Home-Ordner. Neue Dokumente und Exporte landen im Workspace.
 - **Schreiben:** Markdown, Typst und Notizen erscheinen in einer Serifenschrift in einer zentrierten Textspalte; Code bleibt in Monospace.
 - **Notizen:** Die Liste zeigt Titel, Zeit und zwei Zeilen Vorschau; Verschieben, Favorit und Papierkorb erscheinen erst beim Überfahren.
-- **Oberfläche:** Eine Navigation (Dateien, Notizen, Favoriten, Papierkorb) ersetzt den Umschalter oben in der Seitenleiste; die Grautöne sind etwas wärmer.
+- **Oberfläche:** Drei Spalten: links die Navigation (Notizen, Favoriten, Notizordner, Tags, Workspace-Dateien, Suche, Papierkorb), in der Mitte die Liste bzw. der Dateibaum, rechts der Text. Rückverweise stehen unter der Notiz, die Formatleiste erscheint nur bei Dateien. Die Grautöne sind etwas wärmer.
 
 ### Removed
 

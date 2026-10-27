@@ -30,6 +30,8 @@ Ein Ordner wird zum Workspace; der Dateibaum zeigt nur ihn. Eine Datei öffnet s
 | Cmd/Ctrl-S | Speichern |
 | Cmd/Ctrl-W | Tab schließen |
 | Cmd/Ctrl-\ | Split an/aus |
+| Cmd/Ctrl-Shift-L | Liste ein/aus |
+| Cmd/Ctrl-Shift-Enter | Fokusmodus |
 | Cmd/Ctrl-B / I / K / E | Fett / Kursiv / Link / Code |
 | Cmd/Ctrl-Alt-1…3 | Überschrift 1–3 |
 | Cmd/Ctrl-Shift-7 / 8 / 9 | Nummerierte Liste / Aufzählung / Aufgabenliste |
