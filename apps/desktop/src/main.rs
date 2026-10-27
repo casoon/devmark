@@ -3,8 +3,8 @@
 
 mod assist;
 mod notes_ui;
-mod sync_ui;
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -35,7 +35,6 @@ use gpui_kit::prelude::FluentBuilder as _;
 
 use crate::assist::WritingAssist;
 use crate::notes_ui::{NotesState, SidebarMode};
-use crate::sync_ui::SyncSettings;
 
 actions!(
     devmark,
@@ -53,15 +52,14 @@ actions!(
         TogglePreview,
         NewNote,
         SelectionToNote,
-        ExportNotes,
+        RevealVault,
+        NoteToWorkspace,
+        ChooseVault,
         BackupNow,
         ShowFiles,
         ShowNotes,
         ToggleTrash,
         ShowHistory,
-        SyncNow,
-        ChooseSyncFolder,
-        DisableSync,
         FormatBold,
         FormatItalic,
         FormatStrike,
@@ -183,12 +181,12 @@ fn format_entries() -> Vec<(Format, AssetIcon, Box<dyn gpui_kit::Action>)> {
 const IGNORED_DIRS: &[&str] = &[".git", "target", "node_modules", "build", ".dart_tool"];
 
 struct Buffer {
-    /// Dateipfad; bei Notizen ein virtueller Pfad im Datenordner (für relative Bilder, Vorschau).
+    /// Dateipfad; bei Notizen die Datei im Notizordner.
     path: PathBuf,
     editor: Entity<EditorState>,
     syntax: Option<Syntax>,
     dirty: bool,
-    /// Notiz aus der Datenbank statt Datei (Autosave, kein Dateiname).
+    /// Notiz (Pfad im Notizordner) statt Workspace-Datei: Autosave, Name folgt der ersten Zeile.
     note_id: Option<String>,
     /// Anzeigename für Notizen (erste Zeile).
     title: Option<String>,
@@ -349,8 +347,7 @@ struct Workspace {
     new_doc: Option<NewDocForm>,
     sidebar: SidebarMode,
     notes: Option<NotesState>,
-    sync: SyncSettings,
-    sync_timer: Task<()>,
+    window_handle: AnyWindowHandle,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -403,6 +400,12 @@ impl Workspace {
             false
         });
         cx.defer_in(window, |this, window, cx| this.after_start(window, cx));
+        // Änderungen am Notizordner von außen (Finder, andere Editoren, Sync-Dienste) übernehmen.
+        let activation_subscription = cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                this.rescan_notes(window, cx);
+            }
+        });
 
         Self {
             focus_handle,
@@ -419,9 +422,8 @@ impl Workspace {
             new_doc: None,
             sidebar: SidebarMode::Files,
             notes,
-            sync: SyncSettings::load(),
-            sync_timer: Task::ready(()),
-            _subscriptions: vec![tree_subscription, quit_subscription],
+            window_handle: window.window_handle(),
+            _subscriptions: vec![tree_subscription, quit_subscription, activation_subscription],
         }
     }
 
@@ -549,8 +551,13 @@ impl Workspace {
         let language = language_for(&path);
         let syntax = Syntax::for_path(&path);
 
-        // `[[…]]`-Verknüpfungen in Markdown, sofern Notizen verfügbar sind.
-        let note_index = self.notes.as_ref().map(|s| s.index.clone()).filter(|_| syntax == Some(Syntax::Markdown));
+        // Verknüpfungen zwischen Notizen (Eingabe per `[[`), nur in Notizen.
+        let note_index = self
+            .notes
+            .as_ref()
+            .map(|s| s.index.clone())
+            .filter(|_| note.is_some() && syntax == Some(Syntax::Markdown));
+        let source = note.as_ref().map(|(id, _)| id.clone()).unwrap_or_default();
         let workspace = cx.entity().downgrade();
         let mut buffer_assist = None;
         let editor = cx.new(|cx| {
@@ -568,7 +575,12 @@ impl Workspace {
             state.set_value(content, window, cx);
             if let Some(syntax) = syntax {
                 let links = note_index.is_some();
-                let assist = Rc::new(WritingAssist { syntax, notes: note_index, offered: Default::default() });
+                let assist = Rc::new(WritingAssist {
+                    syntax,
+                    notes: note_index,
+                    source: RefCell::new(source),
+                    offered: Default::default(),
+                });
                 buffer_assist = Some(assist.clone());
                 state.lsp_mut().completion_provider = Some(assist.clone());
                 state.lsp_mut().hover_provider = Some(assist.clone());
@@ -1893,15 +1905,14 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_preview))
             .on_action(cx.listener(Self::new_note))
             .on_action(cx.listener(Self::selection_to_note))
-            .on_action(cx.listener(Self::export_notes))
+            .on_action(cx.listener(Self::reveal_vault))
+            .on_action(cx.listener(Self::note_to_workspace))
+            .on_action(cx.listener(Self::choose_vault))
             .on_action(cx.listener(Self::backup_now))
             .on_action(cx.listener(Self::show_files))
             .on_action(cx.listener(Self::show_notes))
             .on_action(cx.listener(Self::toggle_trash))
             .on_action(cx.listener(Self::show_history))
-            .on_action(cx.listener(Self::sync_now))
-            .on_action(cx.listener(Self::choose_sync_folder))
-            .on_action(cx.listener(Self::disable_sync))
             .on_action(cx.listener(Self::new_document))
             .on_action(cx.listener(Self::export_typst))
             .on_action(cx.listener(Self::export_pdf))
@@ -1948,28 +1959,6 @@ impl Render for Workspace {
             StatusBar::new().left(status).right(
                 h_flex()
                     .gap_1()
-                    .when(self.sync.folder.is_some(), |this| {
-                        let label = if self.sync.running {
-                            "Sync …".to_string()
-                        } else if self.sync.last_error.is_some() {
-                            "Sync ⚠".to_string()
-                        } else {
-                            "Sync".to_string()
-                        };
-                        let tooltip = match (&self.sync.last_error, self.sync.last_sync) {
-                            (Some(err), _) => format!("Letzter Sync fehlgeschlagen: {err}"),
-                            (None, Some(at)) => format!("Zuletzt synchronisiert {}", date_time_from_ms(at)),
-                            (None, None) => "Noch nicht synchronisiert".to_string(),
-                        };
-                        this.child(
-                            Button::new("sync-status")
-                                .ghost()
-                                .xsmall()
-                                .label(label)
-                                .tooltip(tooltip)
-                                .on_click(cx.listener(|this, _, window, cx| this.sync_now(&SyncNow, window, cx))),
-                        )
-                    })
                     .child(
                         Button::new("new-doc")
                             .ghost()
@@ -2053,12 +2042,6 @@ fn now_ms() -> i64 {
 fn file_modified_ms(path: &Path) -> Option<i64> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     Some(modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64)
-}
-
-/// Zeitpunkt (UTC) als `14.10.2026, 20:15 UTC`.
-fn date_time_from_ms(ms: i64) -> String {
-    let secs = ms.div_euclid(1000).rem_euclid(86_400);
-    format!("{}, {:02}:{:02} UTC", date_from_ms(ms), secs / 3600, secs % 3600 / 60)
 }
 
 /// Datum (UTC) als `14.10.2026`.
@@ -2267,16 +2250,14 @@ fn main() {
             Menu::new("Notizen").items([
                 MenuItem::action("Neue Notiz", NewNote),
                 MenuItem::action("Auswahl als Notiz", SelectionToNote),
+                MenuItem::action("Notiz im Workspace speichern …", NoteToWorkspace),
                 MenuItem::action("Notizen durchsuchen", ShowNotes),
                 MenuItem::action("Papierkorb", ToggleTrash),
                 MenuItem::action("Versionsverlauf", ShowHistory),
                 MenuItem::separator(),
-                MenuItem::action("Alle Notizen exportieren …", ExportNotes),
+                MenuItem::action("Notizordner im Finder zeigen", RevealVault),
+                MenuItem::action("Notizordner wählen …", ChooseVault),
                 MenuItem::action("Backup jetzt erstellen", BackupNow),
-                MenuItem::separator(),
-                MenuItem::action("Jetzt synchronisieren", SyncNow),
-                MenuItem::action("Sync-Ordner wählen …", ChooseSyncFolder),
-                MenuItem::action("Synchronisierung ausschalten", DisableSync),
             ]),
             Menu::new("Ansicht").items([
                 MenuItem::action("Dateien", ShowFiles),

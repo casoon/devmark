@@ -2,7 +2,7 @@
 
 Universeller Editor für Code, Notizen und längere Texte – Rust + [GPUI](https://www.gpui.rs) über [gpui-kit](https://github.com/longbridge/gpui-kit). Local First, Desktop (macOS, Windows, Linux).
 
-**Status:** Editor (Dateibaum, Tree-sitter, Tabs, Split), Schreibhilfen für Markdown/Typst mit Live-Druckvorschau und PDF-Export, Notizen mit SQLite und optionalem Ordner-Sync.
+**Status:** Editor (Dateibaum, Tree-sitter, Tabs, Split), Schreibhilfen für Markdown/Typst mit Live-Druckvorschau und PDF-Export, Notizen als Markdown-Dateien in einem eigenen Ordner.
 Der frühere Flutter-Stand liegt im Branch `archive/flutter-v0.1`.
 
 ## Starten
@@ -18,8 +18,8 @@ Ein Ordner wird zum Workspace; der Dateibaum zeigt nur ihn. Eine Datei öffnet s
 - **Editor:** Workspace (ein Hauptordner) mit Dateibaum, Syntax-Highlighting, Tabs, geteilte Ansicht, Öffnen-Dialog.
 - **Schreiben (Markdown, Typst):** Formatleiste, Menüs „Format“/„Einfügen“, `/` am Zeilenanfang öffnet eine Einfüge-Liste, Erklärung beim Überfahren von Syntax, Spickzettel. „Neues Dokument“ legt Artikel, Bericht, Brief (DIN 5008), Buchkapitel, README oder Notiz an.
 - **Druck:** Live-Vorschau neben dem Text; Export als PDF (Typst-Satz) oder Umwandlung Markdown → Typst zum Weiterarbeiten.
-- **Notizen:** sofort schreiben ohne Dateinamen, Autosave, Volltextsuche, `#tags` im Text, Favoriten, Papierkorb (30 Tage), Versionsverlauf, Export aller Notizen als Dateien, tägliches Backup.
-- **Sync (optional):** Menü Notizen → „Sync-Ordner wählen …“ – ein Ordner, den iCloud Drive, Nextcloud, Dropbox oder Syncthing verteilt. Gleichzeitige Änderungen werden zu Konfliktkopien, nichts wird still überschrieben.
+- **Notizen:** normale Markdown-Dateien im Notizordner (Ordner = Hierarchie, Dateiname = erste Zeile). Sofort schreiben ohne Dateinamen, Autosave, Volltextsuche, `#tags` im Text oder `tags:` im Frontmatter, Favoriten, Papierkorb (30 Tage), Versionsverlauf, tägliches Backup. Verknüpfungen mit `[[` sind normale relative Markdown-Links und funktionieren auch auf GitHub; Umbenennen und Verschieben passen sie an. „Notiz im Workspace speichern …“ legt eine Notiz als Datei im Workspace ab.
+- **Sync:** Den Notizordner in iCloud Drive, Nextcloud, Dropbox oder Syncthing legen (Menü Notizen → „Notizordner wählen …“) oder als Git-Repository führen. Änderungen von außen übernimmt DevMark, sobald das Fenster aktiv wird.
 
 | Taste | Aktion |
 |---|---|
@@ -54,7 +54,7 @@ Unterstützt CommonMark/GFM (Tabellen, Fußnoten, Aufgabenlisten, `> [!NOTE]`), 
 
 ## Daten
 
-Notizen liegen in einer SQLite-Datenbank (macOS: `~/Library/Application Support/DevMark/devmark.sqlite`, Linux: `~/.local/share/devmark`, Windows: `%APPDATA%\DevMark`), Backups daneben unter `Backups/`. Überschreiben mit `DEVMARK_DATA_DIR` bzw. `DEVMARK_BACKUP_DIR`.
+Notizen liegen als Markdown-Dateien in `~/Documents/DevMark Notizen` (wählbar, Papierkorb in `.trash/`). Daneben führt DevMark einen Index für Suche, Tags, Favoriten und Versionsverlauf im Datenordner (macOS: `~/Library/Application Support/DevMark`, Linux: `~/.local/share/devmark`, Windows: `%APPDATA%\DevMark`), Backups des Index unter `Backups/`. Notizen aus einer früheren `devmark.sqlite` werden beim ersten Start einmalig in den Notizordner übernommen. Überschreiben mit `DEVMARK_VAULT_DIR`, `DEVMARK_DATA_DIR` bzw. `DEVMARK_BACKUP_DIR`.
 
 ## Aufbau
 
@@ -63,8 +63,7 @@ Notizen liegen in einer SQLite-Datenbank (macOS: `~/Library/Application Support/
 | `apps/desktop` | GPUI-App |
 | `crates/writing` | Markdown/MDX → Typst, PDF/Vorschau, Formatieraktionen, Vorlagen |
 | `crates/storage` | SQLite, Migrationen, Änderungsprotokoll, Backups |
-| `crates/notes` | Notizen: Dokumente, Ordner, Tags, Suche, Revisionen, Papierkorb, Export |
-| `crates/sync` | Synchronisierung über austauschbare Transporte (Sync-Ordner) |
+| `crates/notes` | Notizordner: Markdown-Dateien, Index, Links, Ordner, Tags, Suche, Revisionen, Papierkorb |
 
 ## Lizenz
 

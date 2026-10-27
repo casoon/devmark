@@ -10,15 +10,22 @@ Alle nennenswerten Änderungen an DevMark stehen hier. DevMark folgt
 - **Schreiben:** Über dem Text stehen Speicherstand und Wortzahl, bei Notizen zusätzlich die `#tags` (Klick filtert die Notizliste).
 - **Schreiben:** Gliederung am rechten Rand – ein Strich je Überschrift, Klick springt hin.
 - **Notizen:** Navigation „Favoriten“ zeigt nur markierte Notizen.
+- **Notizen:** Menü Notizen → „Notiz im Workspace speichern …“ legt die aktive Notiz als Markdown-Datei im Workspace ab, „Notizordner im Finder zeigen“ und „Notizordner wählen …“ führen zum bzw. wechseln den Ordner.
 - **Workspace:** Kopf über dem Dateibaum mit Ordnername, zuletzt geöffneten Workspaces und „Ordner öffnen …“; Menü Datei → „Workspace öffnen …“.
 
 ### Changed
 
+- **Notizen:** Notizen sind Markdown-Dateien in einem eigenen Ordner (Standard `~/Documents/DevMark Notizen`); Ordner sind echte Unterordner, der Dateiname folgt der ersten Zeile, der Papierkorb liegt in `.trash/`. Notizen aus der bisherigen Datenbank werden beim ersten Start übernommen.
+- **Notizen:** Verknüpfungen sind normale relative Markdown-Links (Eingabe weiter mit `[[`) und werden beim Umbenennen und Verschieben angepasst. Tags kommen zusätzlich aus `tags:` im Frontmatter.
 - **Workspace:** Der Dateibaum bleibt auf den gewählten Hauptordner begrenzt. Dateien von außerhalb öffnen sich als einzelner Tab (mit Hinweis in Tab und Statuszeile), statt die Wurzel zu verschieben.
 - **Workspace:** Ohne Ordner-Argument startet DevMark im zuletzt genutzten Workspace oder ohne Workspace, nicht mehr im Home-Ordner. Neue Dokumente und Exporte landen im Workspace.
 - **Schreiben:** Markdown, Typst und Notizen erscheinen in einer Serifenschrift in einer zentrierten Textspalte; Code bleibt in Monospace.
 - **Notizen:** Die Liste zeigt Titel, Zeit und zwei Zeilen Vorschau; Verschieben, Favorit und Papierkorb erscheinen erst beim Überfahren.
 - **Oberfläche:** Eine Navigation (Dateien, Notizen, Favoriten, Papierkorb) ersetzt den Umschalter oben in der Seitenleiste; die Grautöne sind etwas wärmer.
+
+### Removed
+
+- **Notizen:** Der eigene Sync-Ordner und „Alle Notizen exportieren …“ entfallen – der Notizordner selbst lässt sich über iCloud Drive, Nextcloud, Syncthing oder Git abgleichen.
 
 ### Fixed
 

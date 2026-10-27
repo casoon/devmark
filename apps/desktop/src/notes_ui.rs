@@ -1,16 +1,12 @@
-//! Notes-Modus: Notizen aus der SQLite-Datenbank – sofort schreiben, Autosave, Suche,
-//! Favoriten, Ordner, Verknüpfungen, Papierkorb, Export und tägliches Backup.
+//! Notes-Modus: Notizen als Markdown-Dateien im Notizordner – sofort schreiben, Autosave,
+//! Suche, Favoriten, Ordner, Verknüpfungen, Papierkorb und tägliches Backup des Index.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
-use devmark_notes::{
-    Document, Filter, Folder, Format, Kind, Notes, Revision, create_backup, export_markdown, extract_hashtags,
-    list_backups,
-};
-use devmark_writing::authoring::Syntax;
+use devmark_notes::{Document, Filter, Folder, Moves, Notes, Revision, create_backup, import_legacy, list_backups};
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Selectable, Sizable, WindowExt,
@@ -26,8 +22,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 
 use crate::assist::NoteIndex;
 use crate::{
-    BackupNow, ExportNotes, NewNote, SelectionToNote, ShowFiles, ShowHistory, ShowNotes, ToggleTrash,
-    Workspace,
+    BackupNow, ChooseVault, NewNote, NoteToWorkspace, RevealVault, SelectionToNote, ShowFiles, ShowHistory,
+    ShowNotes, ToggleTrash, Workspace,
 };
 
 /// Wie lange nach der letzten Eingabe gespeichert wird.
@@ -97,6 +93,29 @@ pub fn data_dir() -> PathBuf {
     }
 }
 
+/// Notizordner: `DEVMARK_VAULT_DIR`, sonst gewählter Ordner, sonst `~/Documents/DevMark Notizen`.
+pub fn vault_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("DEVMARK_VAULT_DIR") {
+        return PathBuf::from(dir);
+    }
+    std::fs::read_to_string(data_dir().join("vault"))
+        .ok()
+        .map(|s| PathBuf::from(s.trim()))
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| {
+            std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join("Documents/DevMark Notizen")
+        })
+}
+
+/// Index-Datenbank je Notizordner (FNV-1a über den Pfad), damit ein Wechsel nichts vermischt.
+fn index_path(data_dir: &std::path::Path, vault: &std::path::Path) -> PathBuf {
+    let hash = vault
+        .to_string_lossy()
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
+    data_dir.join(format!("index-{hash:016x}.sqlite"))
+}
+
 /// Backup-Ziel: `DEVMARK_BACKUP_DIR` (z. B. externes Laufwerk, Cloud-Ordner) oder Datenordner.
 fn backup_dir(data_dir: &std::path::Path) -> PathBuf {
     std::env::var_os("DEVMARK_BACKUP_DIR")
@@ -105,17 +124,30 @@ fn backup_dir(data_dir: &std::path::Path) -> PathBuf {
 }
 
 impl NotesState {
-    /// Öffnet die Notiz-Datenbank; Fehler werden angezeigt, die App läuft ohne Notizen weiter.
+    /// Öffnet den Notizordner samt Index und übernimmt einmalig die Notizen aus der früheren
+    /// Datenbank. Fehler werden angezeigt, die App läuft ohne Notizen weiter.
     pub fn open(window: &mut Window, cx: &mut Context<Workspace>) -> Option<Self> {
         let data_dir = data_dir();
-        let notes = match Notes::open(&data_dir.join("devmark.sqlite")) {
+        let vault = vault_dir();
+        let mut notes = match Notes::open(&vault, &index_path(&data_dir, &vault)) {
             Ok(notes) => notes,
             Err(err) => {
-                let message = format!("Notizen nicht verfügbar – Datenbank konnte nicht geöffnet werden: {err}");
+                let message = format!("Notizen nicht verfügbar – „{}“ konnte nicht geöffnet werden: {err}", vault.display());
                 window.defer(cx, move |window, cx| window.push_notification(Notification::error(message), cx));
                 return None;
             }
         };
+        let notification = match import_legacy(&data_dir.join("devmark.sqlite"), &mut notes) {
+            Ok(0) => None,
+            Ok(count) => Some(Notification::success(format!(
+                "{count} Notizen liegen jetzt als Markdown-Dateien in „{}“.",
+                vault.display()
+            ))),
+            Err(err) => Some(Notification::error(format!("Frühere Notizen konnten nicht übernommen werden: {err}"))),
+        };
+        if let Some(notification) = notification {
+            window.defer(cx, move |window, cx| window.push_notification(notification, cx));
+        }
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Notizen durchsuchen …"));
         let subscription = cx.subscribe(&search, |this: &mut Workspace, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
@@ -166,7 +198,74 @@ impl Workspace {
                 );
             }
         self.refresh_notes(cx);
-        self.start_sync_timer(window, cx);
+    }
+
+    /// Notizordner mit dem Index abgleichen (Änderungen von außen) und offene, ungeänderte
+    /// Notizen neu laden.
+    pub(crate) fn rescan_notes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.notes.as_mut() else {
+            return;
+        };
+        match state.notes.rescan() {
+            Ok(true) => {
+                self.refresh_notes(cx);
+                self.reload_clean_notes(window, cx);
+            }
+            Ok(false) => {}
+            Err(err) => window.push_notification(Notification::error(format!("Notizordner konnte nicht gelesen werden: {err}")), cx),
+        }
+    }
+
+    /// Offene Notizen ohne ungesicherte Eingaben auf den Stand der Datei bringen (z. B. nach
+    /// angepassten Links).
+    fn reload_clean_notes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.notes.as_ref() else {
+            return;
+        };
+        for buffer in self.panes.iter().flat_map(|pane| pane.buffers.iter()).filter(|b| !b.dirty) {
+            let Some(document) = buffer.note_id.as_deref().and_then(|id| state.notes.get(id).ok().flatten()) else {
+                continue;
+            };
+            if buffer.editor.read(cx).value() != document.content.as_str() {
+                buffer.editor.update(cx, |editor, cx| editor.set_value(document.content, window, cx));
+            }
+        }
+    }
+
+    /// Wie [`Self::reload_clean_notes`], aus Stellen ohne Fensterzugriff.
+    fn reload_clean_notes_later(&mut self, cx: &mut Context<Self>) {
+        let (handle, this) = (self.window_handle, cx.entity().downgrade());
+        cx.defer(move |cx| {
+            handle
+                .update(cx, |_, window, cx| this.update(cx, |this, cx| this.reload_clean_notes(window, cx)).ok())
+                .ok();
+        });
+    }
+
+    /// Umbenannte/verschobene Notizen in offenen Tabs, Verlauf und Schreibhilfe nachziehen.
+    fn apply_note_moves(&mut self, moves: &Moves, cx: &mut Context<Self>) {
+        if moves.is_empty() {
+            return;
+        }
+        let Some(state) = self.notes.as_mut() else {
+            return;
+        };
+        for (old, new) in moves {
+            for buffer in self.panes.iter_mut().flat_map(|pane| pane.buffers.iter_mut()) {
+                if buffer.note_id.as_deref() == Some(old.as_str()) {
+                    buffer.note_id = Some(new.clone());
+                    buffer.path = state.notes.path_of(new);
+                    buffer.title = Some(devmark_notes::stem(new).to_string());
+                    if let Some(assist) = &buffer.assist {
+                        *assist.source.borrow_mut() = new.clone();
+                    }
+                }
+            }
+            if let Some((id, _)) = state.history.as_mut().filter(|(id, _)| id == old) {
+                *id = new.clone();
+            }
+        }
+        self.reload_clean_notes_later(cx);
     }
 
     pub(crate) fn refresh_notes(&mut self, cx: &mut Context<Self>) {
@@ -199,7 +298,6 @@ impl Workspace {
                 favorites_only: state.favorites_only && !state.show_trash,
                 tag: state.tag_filter.clone().filter(|_| !state.show_trash),
                 folder: state.folder_filter.clone().filter(|_| !state.show_trash).map(Some),
-                ..Default::default()
             };
             state.notes.list(&filter).map(|documents| {
                 documents
@@ -235,8 +333,7 @@ impl Workspace {
     }
 
     fn note_path(&self, document: &Document) -> PathBuf {
-        let dir = self.notes.as_ref().map(|s| s.data_dir.join("Notizen")).unwrap_or_default();
-        dir.join(format!("{}.{}", document.id, document.format.extension()))
+        self.notes.as_ref().map(|s| s.notes.path_of(&document.id)).unwrap_or_default()
     }
 
     pub(crate) fn new_note(&mut self, _: &NewNote, window: &mut Window, cx: &mut Context<Self>) {
@@ -248,7 +345,7 @@ impl Workspace {
             return;
         };
         let folder = state.folder_filter.clone().filter(|_| !state.show_trash);
-        match state.notes.create(Kind::Note, Format::Markdown, "", content, folder.as_deref()) {
+        match state.notes.create("", content, folder.as_deref()) {
             Ok(document) => {
                 state.show_trash = false;
                 self.sidebar = SidebarMode::Notes;
@@ -272,6 +369,28 @@ impl Workspace {
         let source = self.active_buffer().map(|b| b.label()).unwrap_or_default();
         let content = if source.is_empty() { selected } else { format!("{selected}\n\n_Aus {source}_\n") };
         self.create_note_with(&content, window, cx);
+    }
+
+    /// Aktive Notiz als Markdown-Datei im Workspace ablegen; Notiz-Links werden zu Text.
+    pub(crate) fn note_to_workspace(&mut self, _: &NoteToWorkspace, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(buffer) = self.active_buffer().filter(|b| b.note_id.is_some()) else {
+            window.push_notification(Notification::info("Erst eine Notiz öffnen."), cx);
+            return;
+        };
+        let content = devmark_notes::strip_note_links(&buffer.editor.read(cx).value());
+        let name = format!("{}.md", buffer.label());
+        self.ask_export_path(
+            name,
+            move |this, target, window, cx| match std::fs::write(&target, &content) {
+                Ok(()) => {
+                    this.refresh_tree(cx);
+                    this.open_file(target, window, cx);
+                }
+                Err(err) => window.push_notification(Notification::error(format!("Speichern fehlgeschlagen: {err}")), cx),
+            },
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn open_note(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -342,24 +461,20 @@ impl Workspace {
             return Ok(());
         };
         let content = buffer.editor.read(cx).value().to_string();
-        let markdown = buffer.syntax == Some(Syntax::Markdown);
         let Some(state) = self.notes.as_mut() else {
             return Ok(());
         };
         state.save_tasks.remove(id);
-        state.notes.save_content(id, &content)?;
-        if markdown {
-            // `#tag` im Text wird zum Tag (wie in Apple Notes).
-            state.notes.set_tags(id, &extract_hashtags(&content))?;
-        }
-        let title = devmark_notes::display_title("", &content);
+        // Folgt der Dateiname der ersten Zeile, benennt das Speichern die Datei mit um.
+        let moves = state.notes.save_content(id, &content)?;
+        let id = moves.last().map_or(id, |(_, new)| new.as_str()).to_string();
         for buffer in self.panes.iter_mut().flat_map(|pane| pane.buffers.iter_mut()) {
-            if buffer.note_id.as_deref() == Some(id) {
+            if buffer.note_id.as_deref() == Some(id.as_str()) || moves.iter().any(|(old, _)| buffer.note_id.as_ref() == Some(old)) {
                 buffer.dirty = false;
                 buffer.saved_at = Some(devmark_storage_now());
-                buffer.title = Some(title.clone());
             }
         }
+        self.apply_note_moves(&moves, cx);
         self.refresh_notes(cx);
         Ok(())
     }
@@ -369,7 +484,9 @@ impl Workspace {
             return;
         };
         let favorite = state.notes.get(id).ok().flatten().is_some_and(|d| d.favorite);
-        state.notes.set_favorite(id, !favorite).ok();
+        if let Err(err) = state.notes.set_favorite(id, !favorite) {
+            eprintln!("Favorit konnte nicht gesetzt werden: {err}");
+        }
         self.refresh_notes(cx);
     }
 
@@ -431,12 +548,19 @@ impl Workspace {
         self.refresh_notes(cx);
     }
 
-    pub(crate) fn export_notes(&mut self, _: &ExportNotes, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn reveal_vault(&mut self, _: &RevealVault, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(state) = self.notes.as_ref() {
+            cx.reveal_path(state.notes.root());
+        }
+    }
+
+    /// Anderen Notizordner wählen (z. B. in iCloud Drive oder einem Git-Repo).
+    pub(crate) fn choose_vault(&mut self, _: &ChooseVault, window: &mut Window, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Hierhin exportieren".into()),
+            prompt: Some("Als Notizordner verwenden".into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = receiver.await else {
@@ -446,17 +570,17 @@ impl Workspace {
                 return;
             };
             this.update_in(cx, |this, window, cx| {
-                let Some(state) = this.notes.as_ref() else {
-                    return;
-                };
-                let target = dir.join("DevMark-Notizen");
-                match export_markdown(&state.notes, &target) {
-                    Ok(count) => window.push_notification(
-                        Notification::success(format!("{count} Notizen nach „{}“ exportiert.", target.display())),
-                        cx,
-                    ),
-                    Err(err) => window.push_notification(Notification::error(format!("Export fehlgeschlagen: {err}")), cx),
+                this.save_all_notes(cx);
+                for pane in &mut this.panes {
+                    pane.buffers.retain(|b| b.note_id.is_none());
+                    pane.active = pane.active.min(pane.buffers.len().saturating_sub(1));
                 }
+                if let Err(err) = std::fs::write(data_dir().join("vault"), dir.to_string_lossy().as_bytes()) {
+                    window.push_notification(Notification::error(format!("Notizordner konnte nicht gespeichert werden: {err}")), cx);
+                }
+                this.notes = NotesState::open(window, cx);
+                this.sidebar = SidebarMode::Notes;
+                this.refresh_notes(cx);
             })
             .ok();
         })
@@ -645,21 +769,37 @@ impl Workspace {
             return;
         };
         let name = input.read(cx).value().trim().to_string();
-        if !name.is_empty() {
-            state.notes.rename_folder(&id, &name).ok();
+        if name.is_empty() {
+            self.refresh_notes(cx);
+            return;
+        }
+        self.save_all_notes(cx);
+        let Some(state) = self.notes.as_mut() else {
+            return;
+        };
+        match state.notes.rename_folder(&id, &name) {
+            Ok((new_id, moves)) => {
+                if state.folder_filter.as_deref() == Some(id.as_str()) {
+                    state.folder_filter = Some(new_id);
+                }
+                self.apply_note_moves(&moves, cx);
+            }
+            Err(err) => eprintln!("Ordner konnte nicht umbenannt werden: {err}"),
         }
         self.refresh_notes(cx);
     }
 
     /// Ordner löschen; Notizen und Unterordner rücken eine Ebene nach oben.
     fn delete_folder(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_all_notes(cx);
         let Some(state) = self.notes.as_mut() else {
             return;
         };
         let parent = state.folders.iter().find(|f| f.id == id).and_then(|f| f.parent_id.clone());
         match state.notes.delete_folder(id) {
-            Ok(_) => {
+            Ok(moves) => {
                 state.folder_filter = parent;
+                self.apply_note_moves(&moves, cx);
                 window.push_notification(
                     Notification::info("Ordner gelöscht – Notizen und Unterordner liegen jetzt eine Ebene höher."),
                     cx,
@@ -671,9 +811,16 @@ impl Workspace {
     }
 
     fn move_note(&mut self, id: &str, folder: Option<&str>, cx: &mut Context<Self>) {
-        if let Some(state) = self.notes.as_mut() {
-            state.notes.move_to_folder(id, folder).ok();
-        }
+        self.save_all_notes(cx);
+        let moves = match self.notes.as_mut().map(|state| state.notes.move_to_folder(id, folder)) {
+            Some(Ok(moves)) => moves,
+            Some(Err(err)) => {
+                eprintln!("Notiz konnte nicht verschoben werden: {err}");
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
+        self.apply_note_moves(&moves, cx);
         self.refresh_notes(cx);
     }
 

@@ -9,7 +9,6 @@ anyhow = "1.0.104"
 codebook-tree-sitter-typst = "0.12.1"
 devmark-notes = { path = "../../crates/notes" }
 devmark-storage = { path = "../../crates/storage" }
-devmark-sync = { path = "../../crates/sync" }
 devmark-writing = { path = "../../crates/writing" }
 futures = "0.3"
 gpui-kit.workspace = true

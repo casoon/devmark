@@ -1,113 +1,107 @@
-//! Notizen und interne Dokumente: Anlegen, Autosave, Ordner, Tags, Favoriten,
-//! Volltextsuche, Versionsverlauf, Papierkorb, Export als Dateien.
+//! Notizen als Markdown-Dateien in einem Ordner („Vault“): Ordner = Hierarchie, Dateiname =
+//! Titel, Verknüpfungen als relative Markdown-Links. Der Ordner ist maßgeblich und ohne
+//! DevMark lesbar; SQLite dient nur als Index (Volltextsuche, Tags, Favoriten,
+//! Versionsverlauf) und wird bei Bedarf aus dem Ordner nachgezogen.
 //!
-//! Gemeinsames Dokumentenmodell: Notiz, Artikel, Buch und Kapitel liegen in einer Tabelle
-//! (`kind`), Bücher enthalten Kapitel über `parent_id`.
+//! Notiz-IDs sind Pfade relativ zum Vault mit `/` (`Projekte/Idee.md`); der Papierkorb liegt
+//! in `.trash/` im Vault.
 
-mod export;
+mod legacy;
 mod links;
 
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::path::{Path, PathBuf};
 
-use devmark_storage::{ChangeOp, Store, new_id, now_ms, record_change};
+use devmark_storage::{Store, new_id, now_ms};
 use rusqlite::{OptionalExtension, Row, params};
 
-pub use devmark_storage::{BackupInfo, Result, create_backup, list_backups};
-pub use export::export_markdown;
-pub use links::{NoteLink, link_markup, note_links, strip_note_links};
+pub use devmark_storage::{BackupInfo, create_backup, list_backups};
+pub use legacy::import_legacy;
+pub use links::{NoteLink, link_markup, note_links, relative, resolve, stem, strip_note_links};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    Note,
-    Article,
-    Book,
-    Chapter,
+const TRASH_DIR: &str = ".trash";
+/// Name neuer, noch leerer Notizen; solche Dateien folgen der ersten Zeile.
+const UNTITLED: &str = "Neue Notiz";
+
+#[derive(Debug)]
+pub enum Error {
+    Db(rusqlite::Error),
+    Io(std::io::Error),
 }
 
-impl Kind {
-    fn as_str(self) -> &'static str {
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Kind::Note => "note",
-            Kind::Article => "article",
-            Kind::Book => "book",
-            Kind::Chapter => "chapter",
-        }
-    }
-
-    fn parse(s: &str) -> Self {
-        match s {
-            "article" => Kind::Article,
-            "book" => Kind::Book,
-            "chapter" => Kind::Chapter,
-            _ => Kind::Note,
+            Error::Db(err) => err.fmt(f),
+            Error::Io(err) => err.fmt(f),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Format {
-    Markdown,
-    Typst,
-}
+impl std::error::Error for Error {}
 
-impl Format {
-    fn as_str(self) -> &'static str {
-        match self {
-            Format::Markdown => "markdown",
-            Format::Typst => "typst",
-        }
-    }
-
-    fn parse(s: &str) -> Self {
-        if s == "typst" { Format::Typst } else { Format::Markdown }
-    }
-
-    pub fn extension(self) -> &'static str {
-        match self {
-            Format::Markdown => "md",
-            Format::Typst => "typ",
-        }
+impl From<rusqlite::Error> for Error {
+    fn from(err: rusqlite::Error) -> Self {
+        Error::Db(err)
     }
 }
+
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Error::Io(err)
+    }
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Umbenennungen von Notizen (alte ID, neue ID), damit offene Tabs nachziehen können.
+pub type Moves = Vec<(String, String)>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Document {
     pub id: String,
-    pub kind: Kind,
-    pub format: Format,
-    pub parent_id: Option<String>,
+    /// Ordner relativ zum Vault; `None` = oberste Ebene (oder Papierkorb).
     pub folder_id: Option<String>,
+    /// Dateiname ohne `.md`.
     pub title: String,
     pub content: String,
     pub favorite: bool,
     pub created_at: i64,
     pub updated_at: i64,
     pub deleted_at: Option<i64>,
-    pub version: i64,
 }
 
 impl Document {
-    /// Anzeigename: Titel oder – wie in Apple Notes – die erste Textzeile.
     pub fn display_title(&self) -> String {
-        display_title(&self.title, &self.content)
+        self.title.clone()
     }
 }
 
-/// Titel oder erste nicht-leere Zeile (ohne Markdown-/Typst-Überschriftszeichen).
+/// Erste Textzeile (ohne Frontmatter und Überschriftszeichen), wie in Apple Notes.
 pub fn display_title(title: &str, content: &str) -> String {
     if !title.trim().is_empty() {
         return title.trim().to_string();
     }
-    let line = content
+    let body = strip_frontmatter(content);
+    let line = body
         .lines()
         .map(|l| l.trim().trim_start_matches(['#', '=']).trim())
         .find(|l| !l.is_empty() && *l != "---")
-        .unwrap_or("Neue Notiz");
+        .unwrap_or(UNTITLED);
     line.chars().take(80).collect()
+}
+
+fn strip_frontmatter(content: &str) -> &str {
+    content
+        .strip_prefix("---\n")
+        .and_then(|rest| rest.find("\n---").map(|end| &rest[end + 4..]))
+        .unwrap_or(content)
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Folder {
+    /// Pfad relativ zum Vault.
     pub id: String,
     pub parent_id: Option<String>,
     pub name: String,
@@ -133,95 +127,249 @@ pub struct SearchHit {
 /// Auswahl für Listen.
 #[derive(Debug, Clone, Default)]
 pub struct Filter {
-    /// `None` = alle Ordner, `Some(None)` = ohne Ordner, `Some(Some(id))` = dieser Ordner.
+    /// `None` = alle Ordner, `Some(None)` = oberste Ebene, `Some(Some(id))` = dieser Ordner.
     pub folder: Option<Option<String>>,
     pub tag: Option<String>,
     pub favorites_only: bool,
-    pub kind: Option<Kind>,
-    /// Papierkorb statt aktiver Dokumente.
+    /// Papierkorb statt aktiver Notizen.
     pub trash: bool,
 }
 
 pub struct Notes {
+    root: PathBuf,
     store: Store,
     /// Mindestabstand zwischen zwei automatischen Revisionen.
     pub revision_interval_ms: i64,
 }
 
-const DOCUMENT_COLUMNS: &str = "id, kind, format, parent_id, folder_id, title, content, favorite, created_at, updated_at, deleted_at, version";
+const DOCUMENT_COLUMNS: &str = "id, folder_id, title, content, favorite, created_at, updated_at, deleted_at";
 
 fn document_from_row(row: &Row) -> rusqlite::Result<Document> {
     Ok(Document {
         id: row.get(0)?,
-        kind: Kind::parse(&row.get::<_, String>(1)?),
-        format: Format::parse(&row.get::<_, String>(2)?),
-        parent_id: row.get(3)?,
-        folder_id: row.get(4)?,
-        title: row.get(5)?,
-        content: row.get(6)?,
-        favorite: row.get::<_, i64>(7)? != 0,
-        created_at: row.get(8)?,
-        updated_at: row.get(9)?,
-        deleted_at: row.get(10)?,
-        version: row.get(11)?,
+        folder_id: row.get(1)?,
+        title: row.get(2)?,
+        content: row.get(3)?,
+        favorite: row.get::<_, i64>(4)? != 0,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+        deleted_at: row.get(7)?,
     })
 }
 
+/// Ordner der ID (`a/b/x.md` → `a/b`).
+fn parent_of(id: &str) -> Option<String> {
+    id.rsplit_once('/').map(|(dir, _)| dir.to_string())
+}
+
+fn join(dir: Option<&str>, name: &str) -> String {
+    match dir {
+        Some(dir) if !dir.is_empty() => format!("{dir}/{name}"),
+        _ => name.to_string(),
+    }
+}
+
+/// Heißt die Datei `stem` oder `stem 2`, `stem 3` … (freie Namen aus [`Notes::free_id`])?
+fn follows(title: &str, stem: &str) -> bool {
+    title == stem
+        || title
+            .strip_prefix(stem)
+            .and_then(|rest| rest.strip_prefix(' '))
+            .is_some_and(|n| n.parse::<u32>().is_ok())
+}
+
+/// Dateiname aus einem Titel: ohne Pfad-/Sonderzeichen, nicht leer, höchstens 80 Zeichen.
+pub fn file_stem(title: &str) -> String {
+    let cleaned: String = title
+        .chars()
+        .map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() { '-' } else { c })
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('.').trim();
+    if cleaned.is_empty() { UNTITLED.into() } else { cleaned.chars().take(80).collect::<String>().trim().to_string() }
+}
+
+fn mtime_ms(path: &Path) -> i64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_else(now_ms)
+}
+
+fn created_ms(path: &Path) -> i64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.created())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_else(|| mtime_ms(path))
+}
+
+/// Markdown-Dateien und Ordner unter `dir` (ohne versteckte), als IDs relativ zu `root`.
+fn walk(root: &Path, dir: &Path, files: &mut Vec<String>, dirs: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(rel) = path.strip_prefix(root) else {
+            continue;
+        };
+        let id = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+        if path.is_dir() {
+            dirs.push(id);
+            walk(root, &path, files, dirs);
+        } else if name.to_lowercase().ends_with(".md") {
+            files.push(id);
+        }
+    }
+}
+
 impl Notes {
-    pub fn open(path: &Path) -> Result<Self> {
-        Ok(Self::with_store(Store::open(path)?))
+    /// Öffnet den Vault (wird angelegt) mit Index-Datenbank und gleicht beide ab.
+    pub fn open(root: &Path, index: &Path) -> Result<Self> {
+        Self::with_store(root, Store::open(index)?)
     }
 
-    pub fn open_in_memory() -> Result<Self> {
-        Ok(Self::with_store(Store::open_in_memory()?))
+    pub fn with_store(root: &Path, store: Store) -> Result<Self> {
+        std::fs::create_dir_all(root)?;
+        let mut notes = Self { root: root.to_path_buf(), store, revision_interval_ms: 10 * 60 * 1000 };
+        notes.rescan()?;
+        Ok(notes)
     }
 
-    pub fn with_store(store: Store) -> Self {
-        Self { store, revision_interval_ms: 10 * 60 * 1000 }
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     pub fn store(&self) -> &Store {
         &self.store
     }
 
-    pub fn store_mut(&mut self) -> &mut Store {
-        &mut self.store
+    /// Datei einer Notiz.
+    pub fn path_of(&self, id: &str) -> PathBuf {
+        id.split('/').fold(self.root.clone(), |path, part| path.join(part))
     }
 
-    // ---- Dokumente ----
+    /// Freie ID für `stem` in `dir` („Name.md“, „Name 2.md“ …); `keep` gilt als frei.
+    fn free_id(&self, dir: Option<&str>, stem: &str, keep: Option<&str>) -> String {
+        (1..)
+            .map(|n| join(dir, &if n == 1 { format!("{stem}.md") } else { format!("{stem} {n}.md") }))
+            .find(|id| Some(id.as_str()) == keep || !self.path_of(id).exists())
+            .expect("unendlich viele Namen")
+    }
 
-    pub fn create(&mut self, kind: Kind, format: Format, title: &str, content: &str, folder_id: Option<&str>) -> Result<Document> {
-        let id = new_id();
-        let now = now_ms();
-        let device = self.store.device_id().to_string();
-        let tx = self.store.transaction()?;
-        tx.execute(
-            "INSERT INTO documents(id, kind, format, folder_id, title, content, created_at, updated_at, device_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)",
-            params![id, kind.as_str(), format.as_str(), folder_id, title, content, now, device],
+    // ---- Abgleich mit dem Ordner ----
+
+    /// Nimmt Änderungen von außen auf (andere Programme, Sync-Dienste). `true`, wenn sich
+    /// etwas geändert hat.
+    pub fn rescan(&mut self) -> Result<bool> {
+        let (mut files, mut dirs) = (Vec::new(), Vec::new());
+        walk(&self.root, &self.root, &mut files, &mut dirs);
+        let mut trashed = Vec::new();
+        walk(&self.root, &self.root.join(TRASH_DIR), &mut trashed, &mut dirs);
+        let known: HashMap<String, i64> = {
+            let mut stmt = self.store.conn().prepare("SELECT id, updated_at FROM documents")?;
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+        };
+        let mut changed = false;
+        let mut seen = HashSet::new();
+        for (id, trash) in files.into_iter().map(|id| (id, false)).chain(trashed.into_iter().map(|id| (id, true))) {
+            let path = self.path_of(&id);
+            let modified = mtime_ms(&path);
+            if known.get(&id) != Some(&modified) {
+                let content = std::fs::read_to_string(&path).unwrap_or_default();
+                self.index(&id, &content, trash.then_some(modified))?;
+                changed = true;
+            }
+            seen.insert(id);
+        }
+        for id in known.keys().filter(|id| !seen.contains(*id)) {
+            self.unindex(id)?;
+            changed = true;
+        }
+        Ok(changed)
+    }
+
+    /// Indexeintrag aus dem Dateistand (Favorit und Papierkorb-Zeit bleiben erhalten).
+    fn index(&mut self, id: &str, content: &str, deleted_at: Option<i64>) -> Result<()> {
+        let path = self.path_of(id);
+        let folder = if deleted_at.is_some() { None } else { parent_of(id) };
+        ensure_folder(self.store.conn(), folder.as_deref(), self.store.device_id())?;
+        self.store.conn().execute(
+            "INSERT INTO documents(id, folder_id, title, content, created_at, updated_at, deleted_at, device_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET folder_id = excluded.folder_id, title = excluded.title,
+               content = excluded.content, updated_at = excluded.updated_at,
+               deleted_at = CASE WHEN excluded.deleted_at IS NULL THEN NULL
+                                 ELSE coalesce(documents.deleted_at, excluded.deleted_at) END",
+            params![
+                id,
+                folder,
+                stem(id),
+                content,
+                created_ms(&path),
+                mtime_ms(&path),
+                deleted_at,
+                self.store.device_id()
+            ],
         )?;
-        record_change(&tx, &device, "document", &id, ChangeOp::Upsert, 1)?;
-        tx.commit()?;
-        Ok(self.get(&id)?.expect("just inserted"))
+        let mut tags = extract_hashtags(content);
+        for tag in frontmatter_tags(content) {
+            if !tags.iter().any(|t| t.eq_ignore_ascii_case(&tag)) {
+                tags.push(tag);
+            }
+        }
+        self.set_tags(id, &tags)
     }
 
-    /// Schnelle Notiz (Markdown, ohne Ordner) – „sofort schreiben“.
+    fn unindex(&mut self, id: &str) -> Result<()> {
+        let tx = self.store.transaction()?;
+        tx.execute("DELETE FROM revisions WHERE document_id = ?1", params![id])?;
+        tx.execute("DELETE FROM document_tags WHERE document_id = ?1", params![id])?;
+        tx.execute("DELETE FROM attachments WHERE document_id = ?1", params![id])?;
+        tx.execute("DELETE FROM documents WHERE id = ?1", params![id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn write(&mut self, id: &str, content: &str) -> Result<()> {
+        let path = self.path_of(id);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, content)?;
+        self.index(id, content, None)
+    }
+
+    // ---- Notizen ----
+
+    /// Neue Notiz in `folder`; Dateiname aus `title`, sonst aus der ersten Zeile.
+    pub fn create(&mut self, title: &str, content: &str, folder: Option<&str>) -> Result<Document> {
+        let id = self.free_id(folder, &file_stem(&display_title(title, content)), None);
+        self.write(&id, content)?;
+        Ok(self.get(&id)?.expect("just written"))
+    }
+
+    /// Schnelle Notiz auf oberster Ebene – „sofort schreiben“.
     pub fn create_note(&mut self, content: &str) -> Result<Document> {
-        self.create(Kind::Note, Format::Markdown, "", content, None)
+        self.create("", content, None)
     }
 
     pub fn get(&self, id: &str) -> Result<Option<Document>> {
-        self.store
+        Ok(self
+            .store
             .conn()
-            .query_row(
-                &format!("SELECT {DOCUMENT_COLUMNS} FROM documents WHERE id = ?1"),
-                params![id],
-                document_from_row,
-            )
-            .optional()
+            .query_row(&format!("SELECT {DOCUMENT_COLUMNS} FROM documents WHERE id = ?1"), params![id], document_from_row)
+            .optional()?)
     }
 
-    /// Dokumente nach Filter; Favoriten zuerst, dann zuletzt geändert.
+    /// Notizen nach Filter; Favoriten zuerst, dann zuletzt geändert.
     pub fn list(&self, filter: &Filter) -> Result<Vec<Document>> {
         let mut sql = format!("SELECT {DOCUMENT_COLUMNS} FROM documents d WHERE ");
         sql.push_str(if filter.trash { "deleted_at IS NOT NULL" } else { "deleted_at IS NULL" });
@@ -238,90 +386,160 @@ impl Notes {
             args.push(Box::new(tag.clone()));
             sql.push_str(&format!(
                 " AND EXISTS (SELECT 1 FROM document_tags dt JOIN tags t ON t.id = dt.tag_id
-                   WHERE dt.document_id = d.id AND dt.deleted_at IS NULL AND t.name = ?{} COLLATE NOCASE)",
+                   WHERE dt.document_id = d.id AND t.name = ?{} COLLATE NOCASE)",
                 args.len()
             ));
         }
         if filter.favorites_only {
             sql.push_str(" AND favorite = 1");
         }
-        if let Some(kind) = filter.kind {
-            args.push(Box::new(kind.as_str()));
-            sql.push_str(&format!(" AND kind = ?{}", args.len()));
-        }
-        sql.push_str(if filter.trash {
-            " ORDER BY deleted_at DESC"
-        } else {
-            " ORDER BY favorite DESC, updated_at DESC"
-        });
+        sql.push_str(if filter.trash { " ORDER BY deleted_at DESC" } else { " ORDER BY favorite DESC, updated_at DESC" });
         let mut stmt = self.store.conn().prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())), document_from_row)?;
-        rows.collect()
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Ändert Felder eines Dokuments: Version hoch, Zeitstempel, Änderungsprotokoll.
-    fn update(&mut self, id: &str, set: &str, value: &dyn rusqlite::ToSql) -> Result<bool> {
-        let device = self.store.device_id().to_string();
-        let tx = self.store.transaction()?;
-        let changed = tx.execute(
-            &format!("UPDATE documents SET {set} = ?1, updated_at = ?2, version = version + 1, device_id = ?3 WHERE id = ?4"),
-            params![value, now_ms(), device, id],
-        )?;
-        if changed > 0 {
-            let version: i64 = tx.query_row("SELECT version FROM documents WHERE id = ?1", params![id], |r| r.get(0))?;
-            record_change(&tx, &device, "document", id, ChangeOp::Upsert, version)?;
-        }
-        tx.commit()?;
-        Ok(changed > 0)
-    }
-
-    /// Autosave: speichert den Inhalt sofort. Revisionen werden zusammengefasst – höchstens
-    /// eine je `revision_interval_ms`, und zwar mit dem Stand *vor* der Änderung.
-    pub fn save_content(&mut self, id: &str, content: &str) -> Result<bool> {
+    /// Autosave. Revisionen werden zusammengefasst – höchstens eine je `revision_interval_ms`,
+    /// mit dem Stand *vor* der Änderung. Folgt der Dateiname der ersten Zeile (neue Notiz oder
+    /// nie anders benannt), wird die Datei mit umbenannt; zurück kommen die Umbenennungen.
+    pub fn save_content(&mut self, id: &str, content: &str) -> Result<Moves> {
         let Some(current) = self.get(id)? else {
-            return Ok(false);
+            return Ok(Vec::new());
         };
         if current.content == content {
-            return Ok(false);
+            return Ok(Vec::new());
         }
         let last_revision: Option<i64> = self.store.conn().query_row(
             "SELECT max(created_at) FROM revisions WHERE document_id = ?1",
             params![id],
             |r| r.get(0),
         )?;
-        let due = last_revision.is_none_or(|t| now_ms() - t >= self.revision_interval_ms);
-        if due && !current.content.trim().is_empty() {
+        if last_revision.is_none_or(|t| now_ms() - t >= self.revision_interval_ms) && !current.content.trim().is_empty() {
             self.snapshot(&current)?;
         }
-        self.update(id, "content", &content)
+        self.write(id, content)?;
+        if follows(&current.title, &file_stem(&display_title("", &current.content))) || follows(&current.title, UNTITLED) {
+            return self.rename(id, &display_title("", content));
+        }
+        Ok(Vec::new())
     }
 
-    pub fn rename(&mut self, id: &str, title: &str) -> Result<bool> {
-        self.update(id, "title", &title)
+    /// Datei umbenennen (Titel → Dateiname); Links in anderen Notizen ziehen nach.
+    pub fn rename(&mut self, id: &str, title: &str) -> Result<Moves> {
+        let dir = parent_of(id);
+        let new = self.free_id(dir.as_deref(), &file_stem(title), Some(id));
+        self.move_note(id, &new)
     }
 
-    pub fn set_favorite(&mut self, id: &str, favorite: bool) -> Result<bool> {
-        self.update(id, "favorite", &(favorite as i64))
+    pub fn move_to_folder(&mut self, id: &str, folder: Option<&str>) -> Result<Moves> {
+        let new = self.free_id(folder, stem(id), Some(id));
+        self.move_note(id, &new)
     }
 
-    pub fn move_to_folder(&mut self, id: &str, folder_id: Option<&str>) -> Result<bool> {
-        self.update(id, "folder_id", &folder_id)
+    fn move_note(&mut self, old: &str, new: &str) -> Result<Moves> {
+        if old == new {
+            return Ok(Vec::new());
+        }
+        let target = self.path_of(new);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::rename(self.path_of(old), &target)?;
+        let moves = vec![(old.to_string(), new.to_string())];
+        self.apply_moves(&moves)?;
+        Ok(moves)
     }
 
-    pub fn set_format(&mut self, id: &str, format: Format) -> Result<bool> {
-        self.update(id, "format", &format.as_str())
+    /// Nach Verschieben auf der Platte: Index-IDs nachziehen und Links in allen aktiven
+    /// Notizen anpassen (auch die relativen Links der verschobenen Notizen selbst).
+    fn apply_moves(&mut self, moves: &[(String, String)]) -> Result<()> {
+        let map: HashMap<&str, &str> = moves.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        {
+            let device = self.store.device_id().to_string();
+            let tx = self.store.transaction()?;
+            // IDs ändern sich, Revisionen/Tags zeigen kurzzeitig ins Leere.
+            tx.pragma_update(None, "defer_foreign_keys", "ON")?;
+            for (old, new) in moves {
+                let folder = if new.starts_with(&format!("{TRASH_DIR}/")) { None } else { parent_of(new) };
+                ensure_folder(&tx, folder.as_deref(), &device)?;
+                tx.execute(
+                    "UPDATE documents SET id = ?1, title = ?2, folder_id = ?3 WHERE id = ?4",
+                    params![new, stem(new), folder, old],
+                )?;
+                tx.execute("UPDATE revisions SET document_id = ?1 WHERE document_id = ?2", params![new, old])?;
+                tx.execute("UPDATE document_tags SET document_id = ?1 WHERE document_id = ?2", params![new, old])?;
+                tx.execute("UPDATE attachments SET document_id = ?1 WHERE document_id = ?2", params![new, old])?;
+            }
+            tx.commit()?;
+        }
+        let reverse: HashMap<&str, &str> = moves.iter().map(|(a, b)| (b.as_str(), a.as_str())).collect();
+        for document in self.list(&Filter::default())? {
+            let old_source = reverse.get(document.id.as_str()).copied().unwrap_or(&document.id);
+            let rewritten =
+                links::rewrite_links(&document.content, old_source, &document.id, |id| map.get(id).map(|s| s.to_string()));
+            if let Some(content) = rewritten {
+                self.write(&document.id, &content)?;
+            }
+        }
+        // Mtime nach dem Verschieben übernehmen, sonst liest der nächste Abgleich neu ein.
+        for (_, new) in moves {
+            let modified = mtime_ms(&self.path_of(new));
+            self.store.conn().execute("UPDATE documents SET updated_at = ?1 WHERE id = ?2", params![modified, new])?;
+        }
+        Ok(())
     }
 
-    /// In den Papierkorb (Soft-Delete; wird mitsynchronisiert).
-    pub fn trash(&mut self, id: &str) -> Result<bool> {
+    pub fn set_favorite(&mut self, id: &str, favorite: bool) -> Result<()> {
+        self.store.conn().execute("UPDATE documents SET favorite = ?1 WHERE id = ?2", params![favorite as i64, id])?;
+        Ok(())
+    }
+
+    /// In den Papierkorb (`.trash/` im Vault); Links auf die Notiz bleiben stehen und
+    /// funktionieren nach dem Wiederherstellen wieder.
+    pub fn trash(&mut self, id: &str) -> Result<Moves> {
         if let Some(document) = self.get(id)? {
             self.snapshot(&document)?;
         }
-        self.update(id, "deleted_at", &now_ms())
+        let dir = match parent_of(id) {
+            Some(parent) => format!("{TRASH_DIR}/{parent}"),
+            None => TRASH_DIR.to_string(),
+        };
+        let new = self.free_id(Some(&dir), stem(id), None);
+        let target = self.path_of(&new);
+        std::fs::create_dir_all(target.parent().expect("im Vault"))?;
+        std::fs::rename(self.path_of(id), &target)?;
+        let moves = vec![(id.to_string(), new.clone())];
+        {
+            let tx = self.store.transaction()?;
+            tx.pragma_update(None, "defer_foreign_keys", "ON")?;
+            tx.execute(
+                "UPDATE documents SET id = ?1, folder_id = NULL, deleted_at = ?2, updated_at = ?3 WHERE id = ?4",
+                params![new, now_ms(), mtime_ms(&target), id],
+            )?;
+            tx.execute("UPDATE revisions SET document_id = ?1 WHERE document_id = ?2", params![new, id])?;
+            tx.execute("DELETE FROM document_tags WHERE document_id = ?1", params![id])?;
+            tx.commit()?;
+        }
+        Ok(moves)
     }
 
-    pub fn restore(&mut self, id: &str) -> Result<bool> {
-        self.update(id, "deleted_at", &None::<i64>)
+    /// Aus dem Papierkorb an den alten Ort (bei Namensgleichheit mit Nummer).
+    pub fn restore(&mut self, id: &str) -> Result<Moves> {
+        let Some(original) = id.strip_prefix(&format!("{TRASH_DIR}/")) else {
+            return Ok(Vec::new());
+        };
+        let new = self.free_id(parent_of(original).as_deref(), stem(original), None);
+        let target = self.path_of(&new);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::rename(self.path_of(id), &target)?;
+        self.store.conn().execute("UPDATE documents SET deleted_at = NULL WHERE id = ?1", params![id])?;
+        let moves = vec![(id.to_string(), new.clone())];
+        self.apply_moves(&moves)?;
+        let content = std::fs::read_to_string(&target)?;
+        self.index(&new, &content, None)?;
+        Ok(moves)
     }
 
     /// Endgültig löschen, was länger als `older_than_ms` im Papierkorb liegt.
@@ -332,7 +550,7 @@ impl Notes {
                 .store
                 .conn()
                 .prepare("SELECT id FROM documents WHERE deleted_at IS NOT NULL AND deleted_at <= ?1")?;
-            stmt.query_map(params![cutoff], |r| r.get(0))?.collect::<Result<_>>()?
+            stmt.query_map(params![cutoff], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?
         };
         for id in &ids {
             self.purge(id)?;
@@ -340,24 +558,16 @@ impl Notes {
         Ok(ids.len())
     }
 
-    /// Endgültig löschen samt Revisionen, Tags und Anhängen (nur aus dem Papierkorb).
+    /// Endgültig löschen samt Verlauf (nur aus dem Papierkorb).
     pub fn purge(&mut self, id: &str) -> Result<bool> {
-        let device = self.store.device_id().to_string();
-        let tx = self.store.transaction()?;
-        let in_trash: Option<i64> = tx
-            .query_row("SELECT version FROM documents WHERE id = ?1 AND deleted_at IS NOT NULL", params![id], |r| r.get(0))
-            .optional()?;
-        let Some(version) = in_trash else {
+        if !id.starts_with(&format!("{TRASH_DIR}/")) {
             return Ok(false);
-        };
-        // Kinder (Kapitel) hängen sonst am gelöschten Buch.
-        tx.execute("UPDATE documents SET parent_id = NULL WHERE parent_id = ?1", params![id])?;
-        tx.execute("DELETE FROM revisions WHERE document_id = ?1", params![id])?;
-        tx.execute("DELETE FROM document_tags WHERE document_id = ?1", params![id])?;
-        tx.execute("DELETE FROM attachments WHERE document_id = ?1", params![id])?;
-        tx.execute("DELETE FROM documents WHERE id = ?1", params![id])?;
-        record_change(&tx, &device, "document", id, ChangeOp::Purge, version + 1)?;
-        tx.commit()?;
+        }
+        match std::fs::remove_file(self.path_of(id)) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => return Err(err.into()),
+            _ => {}
+        }
+        self.unindex(id)?;
         Ok(true)
     }
 
@@ -377,212 +587,171 @@ impl Notes {
             "SELECT id, document_id, title, content, created_at FROM revisions WHERE document_id = ?1 ORDER BY created_at DESC, rowid DESC",
         )?;
         let rows = stmt.query_map(params![id], |r| {
-            Ok(Revision {
-                id: r.get(0)?,
-                document_id: r.get(1)?,
-                title: r.get(2)?,
-                content: r.get(3)?,
-                created_at: r.get(4)?,
-            })
+            Ok(Revision { id: r.get(0)?, document_id: r.get(1)?, title: r.get(2)?, content: r.get(3)?, created_at: r.get(4)? })
         })?;
-        rows.collect()
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Stellt eine Revision wieder her; der aktuelle Stand wird vorher selbst gesichert.
+    /// Der Dateiname bleibt.
     pub fn restore_revision(&mut self, revision_id: &str) -> Result<bool> {
-        let revision: Option<(String, String, String)> = self
+        let revision: Option<(String, String)> = self
             .store
             .conn()
-            .query_row(
-                "SELECT document_id, title, content FROM revisions WHERE id = ?1",
-                params![revision_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
+            .query_row("SELECT document_id, content FROM revisions WHERE id = ?1", params![revision_id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
             .optional()?;
-        let Some((document_id, title, content)) = revision else {
+        let Some((document_id, content)) = revision else {
             return Ok(false);
         };
-        if let Some(current) = self.get(&document_id)? {
-            self.snapshot(&current)?;
-        }
-        self.update(&document_id, "title", &title)?;
-        self.update(&document_id, "content", &content)
+        let Some(current) = self.get(&document_id)? else {
+            return Ok(false);
+        };
+        self.snapshot(&current)?;
+        self.write(&document_id, &content)?;
+        Ok(true)
     }
 
     // ---- Ordner ----
 
-    pub fn create_folder(&mut self, name: &str, parent_id: Option<&str>) -> Result<Folder> {
-        let id = new_id();
-        let now = now_ms();
-        let device = self.store.device_id().to_string();
-        let tx = self.store.transaction()?;
-        tx.execute(
-            "INSERT INTO folders(id, parent_id, name, created_at, updated_at, device_id) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
-            params![id, parent_id, name, now, device],
-        )?;
-        record_change(&tx, &device, "folder", &id, ChangeOp::Upsert, 1)?;
-        tx.commit()?;
-        Ok(Folder { id, parent_id: parent_id.map(str::to_string), name: name.to_string() })
-    }
-
+    /// Alle Ordner im Vault (ohne versteckte), alphabetisch nach Pfad.
     pub fn folders(&self) -> Result<Vec<Folder>> {
-        let mut stmt = self.store.conn().prepare(
-            "SELECT id, parent_id, name FROM folders WHERE deleted_at IS NULL ORDER BY position, name COLLATE NOCASE",
-        )?;
-        let rows = stmt.query_map([], |r| Ok(Folder { id: r.get(0)?, parent_id: r.get(1)?, name: r.get(2)? }))?;
-        rows.collect()
+        let (mut files, mut dirs) = (Vec::new(), Vec::new());
+        walk(&self.root, &self.root, &mut files, &mut dirs);
+        dirs.sort_by_key(|d| d.to_lowercase());
+        Ok(dirs
+            .into_iter()
+            .map(|id| Folder {
+                parent_id: parent_of(&id),
+                name: id.rsplit('/').next().unwrap_or(&id).to_string(),
+                id,
+            })
+            .collect())
     }
 
-    pub fn rename_folder(&mut self, id: &str, name: &str) -> Result<bool> {
-        let device = self.store.device_id().to_string();
-        let tx = self.store.transaction()?;
-        let changed = tx.execute(
-            "UPDATE folders SET name = ?1, updated_at = ?2, version = version + 1, device_id = ?3 WHERE id = ?4",
-            params![name, now_ms(), device, id],
-        )?;
-        if changed > 0 {
-            let version: i64 = tx.query_row("SELECT version FROM folders WHERE id = ?1", params![id], |r| r.get(0))?;
-            record_change(&tx, &device, "folder", id, ChangeOp::Upsert, version)?;
-        }
-        tx.commit()?;
-        Ok(changed > 0)
+    pub fn create_folder(&mut self, name: &str, parent: Option<&str>) -> Result<Folder> {
+        let name = file_stem(name);
+        let id = (1..)
+            .map(|n| join(parent, &if n == 1 { name.clone() } else { format!("{name} {n}") }))
+            .find(|id| !self.path_of(id).exists())
+            .expect("unendlich viele Namen");
+        std::fs::create_dir_all(self.path_of(&id))?;
+        Ok(Folder { parent_id: parent.map(str::to_string), name: id.rsplit('/').next().unwrap_or(&id).to_string(), id })
     }
 
-    /// Ordner löschen: Unterordner und Dokumente rücken eine Ebene nach oben – nichts geht verloren.
-    pub fn delete_folder(&mut self, id: &str) -> Result<bool> {
-        let parent: Option<Option<String>> = self
-            .store
-            .conn()
-            .query_row("SELECT parent_id FROM folders WHERE id = ?1 AND deleted_at IS NULL", params![id], |r| r.get(0))
-            .optional()?;
-        let Some(parent) = parent else {
-            return Ok(false);
-        };
-        let documents: Vec<String> = {
-            let mut stmt = self.store.conn().prepare("SELECT id FROM documents WHERE folder_id = ?1")?;
-            stmt.query_map(params![id], |r| r.get(0))?.collect::<Result<_>>()?
-        };
-        for document in documents {
-            self.move_to_folder(&document, parent.as_deref())?;
+    /// Ordner umbenennen; gibt die neue Ordner-ID und die verschobenen Notizen zurück.
+    pub fn rename_folder(&mut self, id: &str, name: &str) -> Result<(String, Moves)> {
+        let parent = parent_of(id);
+        let name = file_stem(name);
+        let new = (1..)
+            .map(|n| join(parent.as_deref(), &if n == 1 { name.clone() } else { format!("{name} {n}") }))
+            .find(|candidate| candidate == id || !self.path_of(candidate).exists())
+            .expect("unendlich viele Namen");
+        let moves = self.move_dir(id, &new)?;
+        Ok((new, moves))
+    }
+
+    fn move_dir(&mut self, old: &str, new: &str) -> Result<Moves> {
+        if old == new {
+            return Ok(Vec::new());
         }
-        let device = self.store.device_id().to_string();
-        let tx = self.store.transaction()?;
-        tx.execute("UPDATE folders SET parent_id = ?1 WHERE parent_id = ?2", params![parent, id])?;
-        tx.execute(
-            "UPDATE folders SET deleted_at = ?1, updated_at = ?1, version = version + 1, device_id = ?2 WHERE id = ?3",
-            params![now_ms(), device, id],
-        )?;
-        let version: i64 = tx.query_row("SELECT version FROM folders WHERE id = ?1", params![id], |r| r.get(0))?;
-        record_change(&tx, &device, "folder", id, ChangeOp::Delete, version)?;
-        tx.commit()?;
-        Ok(true)
+        std::fs::rename(self.path_of(old), self.path_of(new))?;
+        let prefix = format!("{old}/");
+        let moves: Moves = self
+            .list(&Filter::default())?
+            .into_iter()
+            .filter_map(|d| d.id.strip_prefix(&prefix).map(|rest| (d.id.clone(), format!("{new}/{rest}"))))
+            .collect();
+        self.apply_moves(&moves)?;
+        Ok(moves)
+    }
+
+    /// Ordner auflösen: Inhalt (Notizen, Unterordner, andere Dateien) rückt eine Ebene nach
+    /// oben – nichts geht verloren.
+    pub fn delete_folder(&mut self, id: &str) -> Result<Moves> {
+        let dir = self.path_of(id);
+        let parent = parent_of(id);
+        let mut moves = Vec::new();
+        for entry in std::fs::read_dir(&dir)?.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let old = format!("{id}/{name}");
+            if name == ".DS_Store" {
+                std::fs::remove_file(entry.path())?;
+            } else if entry.path().is_dir() {
+                let new = (1..)
+                    .map(|n| join(parent.as_deref(), &if n == 1 { name.clone() } else { format!("{name} {n}") }))
+                    .find(|c| !self.path_of(c).exists())
+                    .expect("unendlich viele Namen");
+                moves.extend(self.move_dir(&old, &new)?);
+            } else if name.to_lowercase().ends_with(".md") {
+                moves.extend(self.move_to_folder(&old, parent.as_deref())?);
+            } else {
+                let new = (1..)
+                    .map(|n| join(parent.as_deref(), &if n == 1 { name.clone() } else { format!("{n}-{name}") }))
+                    .find(|c| !self.path_of(c).exists())
+                    .expect("unendlich viele Namen");
+                std::fs::rename(entry.path(), self.path_of(&new))?;
+            }
+        }
+        std::fs::remove_dir(&dir)?;
+        Ok(moves)
     }
 
     // ---- Tags ----
 
-    pub fn add_tag(&mut self, document_id: &str, name: &str) -> Result<()> {
-        let name = name.trim().trim_start_matches('#');
-        if name.is_empty() {
-            return Ok(());
-        }
-        let device = self.store.device_id().to_string();
+    fn set_tags(&mut self, document_id: &str, names: &[String]) -> Result<()> {
         let now = now_ms();
-        let tx = self.store.transaction()?;
-        let tag_id: String = match tx
-            .query_row("SELECT id FROM tags WHERE name = ?1 COLLATE NOCASE", params![name], |r| r.get(0))
-            .optional()?
-        {
-            Some(id) => {
-                tx.execute("UPDATE tags SET deleted_at = NULL WHERE id = ?1", params![id])?;
-                id
-            }
-            None => {
-                // Aus dem Namen abgeleitet: zwei Geräte, die denselben Tag anlegen, erzeugen
-                // dieselbe ID – sonst kollidiert der eindeutige Name beim Sync.
-                let id = tag_id(name);
-                tx.execute(
-                    "INSERT INTO tags(id, name, created_at, updated_at, device_id) VALUES (?1, ?2, ?3, ?3, ?4)",
-                    params![id, name, now, device],
-                )?;
-                record_change(&tx, &device, "tag", &id, ChangeOp::Upsert, 1)?;
-                id
-            }
-        };
-        tx.execute(
-            "INSERT INTO document_tags(document_id, tag_id, created_at, device_id) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(document_id, tag_id) DO UPDATE SET deleted_at = NULL, version = version + 1, device_id = excluded.device_id",
-            params![document_id, tag_id, now, device],
-        )?;
-        record_change(&tx, &device, "document_tag", &format!("{document_id}:{tag_id}"), ChangeOp::Upsert, 1)?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    pub fn remove_tag(&mut self, document_id: &str, name: &str) -> Result<bool> {
         let device = self.store.device_id().to_string();
         let tx = self.store.transaction()?;
-        let changed = tx.execute(
-            "UPDATE document_tags SET deleted_at = ?1, version = version + 1, device_id = ?2
-             WHERE document_id = ?3 AND deleted_at IS NULL
-               AND tag_id = (SELECT id FROM tags WHERE name = ?4 COLLATE NOCASE)",
-            params![now_ms(), device, document_id, name.trim().trim_start_matches('#')],
-        )?;
-        if changed > 0 {
-            let tag_id: String = tx.query_row("SELECT id FROM tags WHERE name = ?1 COLLATE NOCASE", params![name.trim().trim_start_matches('#')], |r| r.get(0))?;
-            record_change(&tx, &device, "document_tag", &format!("{document_id}:{tag_id}"), ChangeOp::Delete, 1)?;
+        tx.execute("DELETE FROM document_tags WHERE document_id = ?1", params![document_id])?;
+        for name in names {
+            let id = tag_id(name);
+            tx.execute(
+                "INSERT INTO tags(id, name, created_at, updated_at, device_id) VALUES (?1, ?2, ?3, ?3, ?4)
+                 ON CONFLICT(id) DO NOTHING",
+                params![id, name, now, device],
+            )?;
+            tx.execute(
+                "INSERT OR IGNORE INTO document_tags(document_id, tag_id, created_at, device_id) VALUES (?1, ?2, ?3, ?4)",
+                params![document_id, id, now, device],
+            )?;
         }
         tx.commit()?;
-        Ok(changed > 0)
-    }
-
-    /// Setzt die Tags eines Dokuments genau auf `names` (fehlende werden entfernt).
-    pub fn set_tags(&mut self, document_id: &str, names: &[String]) -> Result<()> {
-        let current = self.tags_of(document_id)?;
-        for tag in &current {
-            if !names.iter().any(|n| n.eq_ignore_ascii_case(tag)) {
-                self.remove_tag(document_id, tag)?;
-            }
-        }
-        for name in names {
-            if !current.iter().any(|t| t.eq_ignore_ascii_case(name)) {
-                self.add_tag(document_id, name)?;
-            }
-        }
         Ok(())
     }
 
     pub fn tags_of(&self, document_id: &str) -> Result<Vec<String>> {
         let mut stmt = self.store.conn().prepare(
             "SELECT t.name FROM document_tags dt JOIN tags t ON t.id = dt.tag_id
-             WHERE dt.document_id = ?1 AND dt.deleted_at IS NULL ORDER BY t.name COLLATE NOCASE",
+             WHERE dt.document_id = ?1 ORDER BY t.name COLLATE NOCASE",
         )?;
         let rows = stmt.query_map(params![document_id], |r| r.get(0))?;
-        rows.collect()
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Alle benutzten Tags mit Anzahl aktiver Dokumente.
+    /// Alle benutzten Tags mit Anzahl aktiver Notizen.
     pub fn tags(&self) -> Result<Vec<(String, usize)>> {
         let mut stmt = self.store.conn().prepare(
             "SELECT t.name, count(d.id) FROM tags t
-             JOIN document_tags dt ON dt.tag_id = t.id AND dt.deleted_at IS NULL
+             JOIN document_tags dt ON dt.tag_id = t.id
              JOIN documents d ON d.id = dt.document_id AND d.deleted_at IS NULL
              GROUP BY t.id ORDER BY t.name COLLATE NOCASE",
         )?;
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as usize)))?;
-        rows.collect()
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     // ---- Verknüpfungen ----
 
-    /// Aktive Dokumente, die per `[[…|id]]` auf `id` verweisen.
+    /// Aktive Notizen, die per Link auf `id` verweisen.
     pub fn backlinks(&self, id: &str) -> Result<Vec<Document>> {
-        let mut stmt = self.store.conn().prepare(&format!(
-            "SELECT {DOCUMENT_COLUMNS} FROM documents
-             WHERE deleted_at IS NULL AND id <> ?1 AND instr(content, '|' || ?1 || ']]') > 0
-             ORDER BY updated_at DESC"
-        ))?;
-        let rows = stmt.query_map(params![id], document_from_row)?;
-        rows.collect()
+        Ok(self
+            .list(&Filter::default())?
+            .into_iter()
+            .filter(|d| d.id != id)
+            .filter(|d| note_links(&d.content).iter().any(|l| resolve(&d.id, &l.target).as_deref() == Some(id)))
+            .collect())
     }
 
     // ---- Suche ----
@@ -593,23 +762,65 @@ impl Notes {
             return Ok(Vec::new());
         };
         let mut stmt = self.store.conn().prepare(
-            "SELECT d.id, d.title, d.content, snippet(documents_fts, 1, '«', '»', '…', 12)
+            "SELECT d.id, d.title, snippet(documents_fts, 1, '«', '»', '…', 12)
              FROM documents_fts JOIN documents d ON d.rid = documents_fts.rowid
              WHERE documents_fts MATCH ?1 AND d.deleted_at IS NULL
              ORDER BY bm25(documents_fts, 5.0, 1.0) LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![fts_query, limit as i64], |r| {
-            let title: String = r.get(1)?;
-            let content: String = r.get(2)?;
-            Ok(SearchHit { id: r.get(0)?, title: display_title(&title, &content), snippet: r.get(3)? })
+            Ok(SearchHit { id: r.get(0)?, title: r.get(1)?, snippet: r.get(2)? })
         })?;
-        rows.collect()
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
+}
+
+/// Ordnerpfad samt Elternordnern in der Tabelle `folders` (Fremdschlüssel von
+/// `documents.folder_id`); maßgeblich sind die Ordner auf der Platte.
+fn ensure_folder(conn: &rusqlite::Connection, folder: Option<&str>, device: &str) -> Result<()> {
+    let Some(folder) = folder else {
+        return Ok(());
+    };
+    let now = now_ms();
+    let mut parent: Option<String> = None;
+    for part in folder.split('/') {
+        let id = join(parent.as_deref(), part);
+        conn.execute(
+            "INSERT OR IGNORE INTO folders(id, parent_id, name, created_at, updated_at, device_id) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+            params![id, parent, part, now, device],
+        )?;
+        parent = Some(id);
+    }
+    Ok(())
 }
 
 /// Stabile Tag-ID aus dem Namen (Groß-/Kleinschreibung egal).
 pub fn tag_id(name: &str) -> String {
     format!("tag:{}", name.trim().trim_start_matches('#').to_lowercase())
+}
+
+/// `tags:` im Frontmatter (`[a, b]` oder Liste mit `- a`).
+fn frontmatter_tags(content: &str) -> Vec<String> {
+    let Some(rest) = content.strip_prefix("---\n") else {
+        return Vec::new();
+    };
+    let Some(end) = rest.find("\n---") else {
+        return Vec::new();
+    };
+    let mut tags = Vec::new();
+    let mut in_list = false;
+    for line in rest[..end].lines() {
+        if let Some(value) = line.strip_prefix("tags:") {
+            let value = value.trim().trim_start_matches('[').trim_end_matches(']');
+            tags.extend(value.split(',').map(|t| t.trim().trim_matches(['"', '\'', '#']).to_string()));
+            in_list = value.is_empty();
+        } else if in_list && let Some(item) = line.trim_start().strip_prefix("- ") {
+            tags.push(item.trim().trim_matches(['"', '\'', '#']).to_string());
+        } else {
+            in_list = false;
+        }
+    }
+    tags.retain(|t| !t.is_empty());
+    tags
 }
 
 /// `#tags` im Markdown-Text (wie in Apple Notes/Obsidian). Überschriften (`# Titel`),
@@ -673,126 +884,142 @@ fn fts_query(query: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn notes() -> Notes {
-        Notes::open_in_memory().unwrap()
+    /// Vault in einem frischen Temp-Ordner, Index im Speicher.
+    pub(crate) fn vault() -> (Notes, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("devmark-vault-{}", new_id()));
+        (Notes::with_store(&dir, Store::open_in_memory().unwrap()).unwrap(), dir)
+    }
+
+    fn read(dir: &Path, id: &str) -> String {
+        std::fs::read_to_string(dir.join(id)).unwrap()
     }
 
     #[test]
-    fn create_get_and_list() {
-        let mut n = notes();
-        let a = n.create_note("# Einkauf\nMilch").unwrap();
-        let b = n.create(Kind::Article, Format::Typst, "Artikel", "= Text", None).unwrap();
-        assert_eq!(a.display_title(), "Einkauf");
-        assert_eq!(n.get(&b.id).unwrap().unwrap().format, Format::Typst);
-        n.set_favorite(&a.id, true).unwrap();
+    fn notes_are_files_named_after_first_line() {
+        let (mut n, dir) = vault();
+        let note = n.create_note("").unwrap();
+        assert_eq!(note.id, "Neue Notiz.md");
+        let moves = n.save_content(&note.id, "# Einkauf\nMilch").unwrap();
+        assert_eq!(moves, [("Neue Notiz.md".to_string(), "Einkauf.md".to_string())]);
+        assert_eq!(read(&dir, "Einkauf.md"), "# Einkauf\nMilch");
+        assert!(!dir.join("Neue Notiz.md").exists());
+        // Gleicher Titel → Nummer; auch so nummerierte Dateien folgen der ersten Zeile.
+        let second = n.create_note("# Einkauf").unwrap();
+        assert_eq!(second.id, "Einkauf 2.md");
+        assert_eq!(n.save_content(&second.id, "# Brot").unwrap()[0].1, "Brot.md");
+        // Von Hand anders benannte Datei behält ihren Namen.
+        std::fs::write(dir.join("Eigener Name.md"), "# Erste Zeile").unwrap();
+        n.rescan().unwrap();
+        assert!(n.save_content("Eigener Name.md", "# Andere Zeile").unwrap().is_empty());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn rescan_picks_up_outside_changes() {
+        let (mut n, dir) = vault();
+        std::fs::create_dir_all(dir.join("Projekte")).unwrap();
+        std::fs::write(dir.join("Projekte/Plan.md"), "Text #idee").unwrap();
+        std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
+        std::fs::write(dir.join(".obsidian/x.md"), "versteckt").unwrap();
+        assert!(n.rescan().unwrap());
+        assert!(!n.rescan().unwrap(), "zweiter Abgleich ohne Änderung");
         let all = n.list(&Filter::default()).unwrap();
-        assert_eq!(all[0].id, a.id, "Favoriten zuerst");
-        let articles = n.list(&Filter { kind: Some(Kind::Article), ..Default::default() }).unwrap();
-        assert_eq!(articles.len(), 1);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].folder_id.as_deref(), Some("Projekte"));
+        assert_eq!(n.tags().unwrap(), [("idee".to_string(), 1)]);
+        assert_eq!(n.folders().unwrap()[0].id, "Projekte");
+        std::fs::remove_file(dir.join("Projekte/Plan.md")).unwrap();
+        n.rescan().unwrap();
+        assert!(n.list(&Filter::default()).unwrap().is_empty());
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
-    fn autosave_versions_and_change_log() {
-        let mut n = notes();
-        let doc = n.create_note("eins").unwrap();
-        assert!(n.save_content(&doc.id, "zwei").unwrap());
-        assert!(!n.save_content(&doc.id, "zwei").unwrap(), "unverändert speichert nichts");
-        let doc = n.get(&doc.id).unwrap().unwrap();
-        assert_eq!(doc.version, 2);
-        let changes: i64 = n.store().conn().query_row("SELECT count(*) FROM changes", [], |r| r.get(0)).unwrap();
-        assert_eq!(changes, 2);
-    }
+    fn moving_rewrites_links_everywhere() {
+        let (mut n, dir) = vault();
+        let folder = n.create_folder("Arbeit", None).unwrap();
+        let target = n.create("Ziel", "Inhalt", Some(&folder.id)).unwrap();
+        let source = n.create("Quelle", &format!("Siehe {}", link_markup("Ziel", "Quelle.md", &target.id)), None).unwrap();
+        assert_eq!(read(&dir, &source.id), "Siehe [Ziel](Arbeit/Ziel.md)");
+        assert_eq!(n.backlinks(&target.id).unwrap()[0].id, source.id);
 
-    #[test]
-    fn revisions_are_coalesced_and_restorable() {
-        let mut n = notes();
-        let doc = n.create_note("v1").unwrap();
-        n.save_content(&doc.id, "v2").unwrap();
-        n.save_content(&doc.id, "v3").unwrap();
-        // Innerhalb des Intervalls nur eine Revision (Stand vor der ersten Änderung).
-        let revisions = n.revisions(&doc.id).unwrap();
-        assert_eq!(revisions.len(), 1);
-        assert_eq!(revisions[0].content, "v1");
-        n.revision_interval_ms = 0;
-        n.save_content(&doc.id, "v4").unwrap();
-        assert_eq!(n.revisions(&doc.id).unwrap()[0].content, "v3");
-        let first = n.revisions(&doc.id).unwrap().last().unwrap().id.clone();
-        n.restore_revision(&first).unwrap();
-        assert_eq!(n.get(&doc.id).unwrap().unwrap().content, "v1");
+        n.rename(&target.id, "Neues Ziel").unwrap();
+        assert_eq!(read(&dir, &source.id), "Siehe [Neues Ziel](Arbeit/Neues%20Ziel.md)");
+        n.move_to_folder(&source.id, Some("Arbeit")).unwrap();
+        assert_eq!(read(&dir, "Arbeit/Quelle.md"), "Siehe [Neues Ziel](Neues%20Ziel.md)");
+
+        let (new_folder, moves) = n.rename_folder("Arbeit", "Job").unwrap();
+        assert_eq!(new_folder, "Job");
+        assert_eq!(moves.len(), 2);
+        assert_eq!(read(&dir, "Job/Quelle.md"), "Siehe [Neues Ziel](Neues%20Ziel.md)");
+        assert_eq!(n.backlinks("Job/Neues Ziel.md").unwrap().len(), 1);
+
+        n.delete_folder("Job").unwrap();
+        assert_eq!(read(&dir, "Quelle.md"), "Siehe [Neues Ziel](Neues%20Ziel.md)");
+        assert!(n.folders().unwrap().is_empty());
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn trash_restore_purge() {
-        let mut n = notes();
-        let doc = n.create_note("weg damit").unwrap();
-        n.add_tag(&doc.id, "alt").unwrap();
-        n.trash(&doc.id).unwrap();
+        let (mut n, dir) = vault();
+        let doc = n.create("Weg", "weg damit #alt", None).unwrap();
+        n.set_favorite(&doc.id, true).unwrap();
+        let moves = n.trash(&doc.id).unwrap();
+        let trashed = &moves[0].1;
+        assert_eq!(trashed, ".trash/Weg.md");
+        assert!(dir.join(".trash/Weg.md").exists());
         assert!(n.list(&Filter::default()).unwrap().is_empty());
         assert_eq!(n.list(&Filter { trash: true, ..Default::default() }).unwrap().len(), 1);
         assert!(n.search("weg", 10).unwrap().is_empty(), "Papierkorb nicht in der Suche");
-        n.restore(&doc.id).unwrap();
-        assert_eq!(n.list(&Filter::default()).unwrap().len(), 1);
-        n.trash(&doc.id).unwrap();
+        // Abgleich behält Papierkorb-Zustand.
+        assert!(!n.rescan().unwrap());
+        let restored = n.restore(trashed).unwrap()[0].1.clone();
+        assert_eq!(restored, "Weg.md");
+        assert!(n.get(&restored).unwrap().unwrap().favorite, "Favorit bleibt");
+        assert_eq!(n.tags_of(&restored).unwrap(), ["alt"]);
+        let trashed = n.trash(&restored).unwrap()[0].1.clone();
         assert_eq!(n.purge_trash(0).unwrap(), 1);
-        assert!(n.get(&doc.id).unwrap().is_none());
-        let purge: i64 = n
-            .store()
-            .conn()
-            .query_row("SELECT count(*) FROM changes WHERE op = 'purge'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(purge, 1);
+        assert!(n.get(&trashed).unwrap().is_none());
+        assert!(!dir.join(".trash/Weg.md").exists());
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
-    fn folders_and_tags() {
-        let mut n = notes();
-        let work = n.create_folder("Arbeit", None).unwrap();
-        let sub = n.create_folder("Projekte", Some(&work.id)).unwrap();
-        let doc = n.create(Kind::Note, Format::Markdown, "Plan", "", Some(&sub.id)).unwrap();
-        n.add_tag(&doc.id, "#Wichtig").unwrap();
-        n.add_tag(&doc.id, "wichtig").unwrap();
-        assert_eq!(n.tags_of(&doc.id).unwrap(), ["Wichtig"]);
-        assert_eq!(n.tags().unwrap(), [("Wichtig".to_string(), 1)]);
-        let tagged = n.list(&Filter { tag: Some("WICHTIG".into()), ..Default::default() }).unwrap();
-        assert_eq!(tagged.len(), 1);
-        n.delete_folder(&sub.id).unwrap();
-        assert_eq!(n.get(&doc.id).unwrap().unwrap().folder_id.as_deref(), Some(work.id.as_str()));
-        assert_eq!(n.folders().unwrap().len(), 1);
-        n.remove_tag(&doc.id, "wichtig").unwrap();
-        assert!(n.tags_of(&doc.id).unwrap().is_empty());
+    fn revisions_are_coalesced_and_follow_renames() {
+        let (mut n, dir) = vault();
+        let doc = n.create("Text", "v1", None).unwrap();
+        n.rename(&doc.id, "Fest").unwrap();
+        let id = "Fest.md";
+        n.save_content(id, "v2").unwrap();
+        n.save_content(id, "v3").unwrap();
+        let revisions = n.revisions(id).unwrap();
+        assert_eq!(revisions.len(), 1);
+        assert_eq!(revisions[0].content, "v1");
+        n.revision_interval_ms = 0;
+        n.save_content(id, "v4").unwrap();
+        let first = n.revisions(id).unwrap().last().unwrap().id.clone();
+        n.restore_revision(&first).unwrap();
+        assert_eq!(read(&dir, id), "v1");
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
-    fn backlinks_follow_ids_not_titles() {
-        let mut n = notes();
-        let target = n.create_note("# Ziel").unwrap();
-        let source = n.create_note(&format!("Siehe {}", link_markup("Ziel", &target.id))).unwrap();
-        n.create_note("[[Ziel]] ohne ID zählt nicht").unwrap();
-        n.save_content(&target.id, "# Neuer Titel").unwrap();
-        let back = n.backlinks(&target.id).unwrap();
-        assert_eq!(back.len(), 1);
-        assert_eq!(back[0].id, source.id);
-        n.trash(&source.id).unwrap();
-        assert!(n.backlinks(&target.id).unwrap().is_empty());
-    }
-
-    #[test]
-    fn full_text_search() {
-        let mut n = notes();
-        n.create_note("# Rezept\nApfelkuchen mit Zimt").unwrap();
-        n.create(Kind::Note, Format::Markdown, "Größenvergleich", "Fluss und Straße", None).unwrap();
+    fn full_text_search_and_frontmatter_tags() {
+        let (mut n, dir) = vault();
+        n.create("Rezept", "Apfelkuchen mit Zimt", None).unwrap();
+        n.create("Größenvergleich", "---\ntags: [maße, \"#vergleich\"]\n---\nFluss und Straße", None).unwrap();
         let hits = n.search("apfel", 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].title, "Rezept");
         assert!(hits[0].snippet.contains("«Apfelkuchen»"), "{}", hits[0].snippet);
-        assert_eq!(n.search("Grö", 10).unwrap().len(), 1);
         assert_eq!(n.search("Gro", 10).unwrap().len(), 1, "remove_diacritics");
-        // FTS-Sonderzeichen in der Eingabe dürfen keinen Syntaxfehler auslösen.
         assert!(n.search("\"\"* OR ( NEAR", 10).is_ok());
-        assert!(n.search("", 10).unwrap().is_empty());
+        assert_eq!(n.tags_of("Größenvergleich.md").unwrap(), ["maße", "vergleich"]);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -802,18 +1029,10 @@ mod tests {
     }
 
     #[test]
-    fn set_tags_replaces() {
-        let mut n = notes();
-        let doc = n.create_note("x").unwrap();
-        n.set_tags(&doc.id, &["a".into(), "b".into()]).unwrap();
-        n.set_tags(&doc.id, &["B".into(), "c".into()]).unwrap();
-        assert_eq!(n.tags_of(&doc.id).unwrap(), ["b", "c"]);
-    }
-
-    #[test]
-    fn display_titles() {
-        assert_eq!(display_title("", "\n\n= Typst-Titel\nText"), "Typst-Titel");
-        assert_eq!(display_title("", "---\n"), "Neue Notiz");
-        assert_eq!(display_title(" Eigener ", "x"), "Eigener");
+    fn titles_and_stems() {
+        assert_eq!(display_title("", "---\ntags: [a]\n---\n\n# Titel\nText"), "Titel");
+        assert_eq!(display_title("", ""), "Neue Notiz");
+        assert_eq!(file_stem("a/b: c?"), "a-b- c-");
+        assert_eq!(file_stem("..."), "Neue Notiz");
     }
 }

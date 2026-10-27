@@ -1,11 +1,11 @@
 //! Schreibhilfen im Editor ohne Language Server: Einfüge-Liste per `/` am Zeilenanfang,
-//! Erklärungen beim Überfahren von Markdown-/Typst-Syntax und Verknüpfungen `[[Titel|id]]`
-//! zwischen Notizen (Vervollständigung, Cmd-Klick öffnet).
+//! Erklärungen beim Überfahren von Markdown-/Typst-Syntax und Verknüpfungen zwischen Notizen
+//! als Markdown-Links (Eingabe per `[[`, Cmd-Klick öffnet).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use devmark_notes::{NoteLink, link_markup, note_links};
+use devmark_notes::{NoteLink, link_markup, note_links, resolve};
 use devmark_writing::authoring::{self, Action, Syntax};
 use gpui_kit::component::input::{CompletionProvider, DefinitionProvider, HoverProvider, Position, Rope, RopeExt};
 use gpui_kit::{App, Task, Window};
@@ -14,7 +14,7 @@ use lsp_types::{
     Documentation, Hover, HoverContents, LocationLink, MarkupContent, MarkupKind, Range, TextEdit, Uri,
 };
 
-/// Notizen für `[[…]]`: (id, Anzeigetitel), von der Notizliste aktuell gehalten.
+/// Notizen für Verknüpfungen: (id, Titel), von der Notizliste aktuell gehalten.
 pub type NoteIndex = Rc<RefCell<Vec<(String, String)>>>;
 
 const NOTE_URI_PREFIX: &str = "devmark-note:";
@@ -26,8 +26,10 @@ pub fn note_id_from_uri(uri: &Uri) -> Option<&str> {
 
 pub struct WritingAssist {
     pub syntax: Syntax,
-    /// Gesetzt in Markdown, wenn Notizen verfügbar sind: dann gibt es `[[…]]`-Verknüpfungen.
+    /// Gesetzt in Markdown-Notizen: dann gibt es Verknüpfungen.
     pub notes: Option<NoteIndex>,
+    /// ID der Notiz selbst (Links sind relativ dazu); zieht beim Umbenennen nach.
+    pub source: RefCell<String>,
     /// Zuletzt angebotene `/`-Einfügungen: Position des `/`, Einfügetexte mit Platzhaltern.
     pub offered: RefCell<Option<(usize, Vec<Snippet>)>>,
 }
@@ -69,10 +71,8 @@ impl WritingAssist {
         let column = offset - line_start;
         let mut link = note_links(&line).into_iter().find(|l| l.range.contains(&column))?;
         link.range = line_start + link.range.start..line_start + link.range.end;
-        let id = link.id.clone().or_else(|| {
-            let title = link.title.to_lowercase();
-            index.borrow().iter().find(|(_, t)| t.to_lowercase() == title).map(|(id, _)| id.clone())
-        });
+        let id = resolve(&self.source.borrow(), &link.target)
+            .filter(|id| index.borrow().iter().any(|(known, _)| known == id));
         Some((link, id))
     }
 
@@ -89,9 +89,10 @@ impl WritingAssist {
         );
         let query = query.trim().to_lowercase();
         let index = index.borrow();
+        let source = self.source.borrow();
         let mut matches: Vec<&(String, String)> = index
             .iter()
-            .filter(|(_, title)| title.to_lowercase().contains(&query))
+            .filter(|(id, title)| *id != *source && title.to_lowercase().contains(&query))
             .collect();
         // Titel, die mit der Eingabe beginnen, zuerst; sonst Reihenfolge der Notizliste.
         matches.sort_by_key(|(_, title)| !title.to_lowercase().starts_with(&query));
@@ -107,7 +108,7 @@ impl WritingAssist {
                     sort_text: Some(format!("{ix:03}")),
                     // Siehe unten: Umlaute im Label.
                     filter_text: Some(String::new()),
-                    text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: link_markup(title, id) })),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: link_markup(title, &source, id) })),
                     ..Default::default()
                 })
                 .collect(),
@@ -204,7 +205,7 @@ impl HoverProvider for WritingAssist {
             });
             let value = match title {
                 Some(title) => format!("Notiz **{title}** – Cmd-Klick öffnet sie."),
-                None => format!("Keine Notiz „{}“ gefunden (gelöscht oder im Papierkorb?).", link.title),
+                None => format!("Keine Notiz „{}“ gefunden (gelöscht oder im Papierkorb?).", link.target),
             };
             return Task::ready(Ok(Some(Hover {
                 contents: HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value }),
