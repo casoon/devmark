@@ -31,3 +31,7 @@ Alle nennenswerten Änderungen an DevMark stehen hier. DevMark folgt
 ### Fixed
 
 - **Oberfläche:** Die Icons für „Dateien“ und „Notizen“ in der Navigation werden wieder angezeigt.
+
+### Security
+
+- **Datenbank:** `rusqlite` 0.41 bündelt SQLite 3.54 und schließt damit RUSTSEC-2026-0459 (uninitialisierter Speicher bei nicht passendem Datenbank-/WAL-Paar).

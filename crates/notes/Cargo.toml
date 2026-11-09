@@ -6,4 +6,4 @@ license.workspace = true
 
 [dependencies]
 devmark-storage = { path = "../storage" }
-rusqlite = "0.40.2"
+rusqlite = "0.41"
