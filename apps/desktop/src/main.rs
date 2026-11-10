@@ -1164,6 +1164,7 @@ impl Workspace {
         let source = buffer.editor.read(cx).value().to_string();
         let path = buffer.path.clone();
         if buffer.note_id.is_some() {
+            let source = devmark_notes::strip_note_links(&source);
             let name = format!("{}.pdf", buffer.label());
             self.ask_export_path(name, move |this, target, window, cx| {
                 this.start_pdf_export(source, syntax, path, target, window, cx)

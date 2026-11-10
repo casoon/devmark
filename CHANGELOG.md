@@ -30,6 +30,7 @@ Alle nennenswerten Änderungen an DevMark stehen hier. DevMark folgt
 
 ### Fixed
 
+- **Notizen:** Im PDF einer Notiz stehen Verknüpfungen zu anderen Notizen als Text statt als Link auf eine `.md`-Datei, die es beim Empfänger nicht gibt – wie schon in der Druckvorschau.
 - **Oberfläche:** Die Icons für „Dateien“ und „Notizen“ in der Navigation werden wieder angezeigt.
 
 ### Security
