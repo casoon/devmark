@@ -98,27 +98,27 @@ pub fn markdown_to_typst(source: &str, options: &Options) -> Conversion {
         .map(str::to_ascii_lowercase)
         .unwrap_or_else(|| options.lang.clone());
 
-    let accent = metadata.accent.as_deref().and_then(|value| {
+    // The preamble applies the colour; here it is only checked, with the line for warnings.
+    if let Some(value) = metadata.accent.as_deref() {
         let line = source[..source.len() - body.len()]
             .lines()
             .position(|l| l.trim_start().to_ascii_lowercase().starts_with("accent"))
             .map(|ix| ix + 1);
         let warn = |message: String| Warning { line, message };
-        let Some(rgb) = parse_hex_color(value) else {
+        if let Some(rgb) = parse_hex_color(value) {
+            let contrast = contrast_on_white(rgb);
+            if contrast < 4.5 {
+                let ratio = format!("{contrast:.1}").replace('.', ",");
+                warnings.push(warn(format!(
+                    "Akzentfarbe „{value}“ hat zu wenig Kontrast zu Papierweiß ({ratio}:1, nötig sind 4,5:1) – Überschriften und Links sind schwer lesbar."
+                )));
+            }
+        } else {
             warnings.push(warn(format!(
                 "Akzentfarbe „{value}“ nicht erkannt (erwartet z. B. \"#0a7f6f\") – ignoriert."
             )));
-            return None;
-        };
-        let contrast = contrast_on_white(rgb);
-        if contrast < 4.5 {
-            let ratio = format!("{contrast:.1}").replace('.', ",");
-            warnings.push(warn(format!(
-                "Akzentfarbe „{value}“ hat zu wenig Kontrast zu Papierweiß ({ratio}:1, nötig sind 4,5:1) – Überschriften und Links sind schwer lesbar."
-            )));
         }
-        Some(format!("#{:02x}{:02x}{:02x}", rgb.0, rgb.1, rgb.2))
-    });
+    }
 
     let mut renderer = Renderer::new(options);
     renderer.warnings = warnings;
