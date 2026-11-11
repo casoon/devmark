@@ -122,6 +122,19 @@ pub struct SearchHit {
     pub title: String,
     /// Ausschnitt mit Treffern zwischen `«` und `»`.
     pub snippet: String,
+    /// Ordner der Notiz relativ zum Vault; `None` = oberste Ebene.
+    pub folder_id: Option<String>,
+    pub updated_at: i64,
+}
+
+/// Reihenfolge der Suchtreffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchOrder {
+    /// Beste Übereinstimmung zuerst.
+    #[default]
+    Relevance,
+    /// Zuletzt geänderte Notiz zuerst.
+    Recent,
 }
 
 /// Auswahl für Listen.
@@ -932,21 +945,28 @@ impl Notes {
     // ---- Suche ----
 
     /// Volltextsuche über Titel und Inhalt (Wortanfänge, Umlaut-/Akzent-tolerant).
-    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+    pub fn search(&self, query: &str, limit: usize, order: SearchOrder) -> Result<Vec<SearchHit>> {
         let Some(fts_query) = fts_query(query) else {
             return Ok(Vec::new());
         };
-        let mut stmt = self.store.conn().prepare(
-            "SELECT d.id, d.title, snippet(documents_fts, 1, '«', '»', '…', 12)
+        let order_by = match order {
+            SearchOrder::Relevance => "bm25(documents_fts, 5.0, 1.0)",
+            SearchOrder::Recent => "d.updated_at DESC, bm25(documents_fts, 5.0, 1.0)",
+        };
+        let mut stmt = self.store.conn().prepare(&format!(
+            "SELECT d.id, d.title, snippet(documents_fts, 1, '«', '»', '…', 12),
+                    d.folder_id, d.updated_at
              FROM documents_fts JOIN documents d ON d.rid = documents_fts.rowid
              WHERE documents_fts MATCH ?1 AND d.deleted_at IS NULL
-             ORDER BY bm25(documents_fts, 5.0, 1.0) LIMIT ?2",
-        )?;
+             ORDER BY {order_by} LIMIT ?2"
+        ))?;
         let rows = stmt.query_map(params![fts_query, limit as i64], |r| {
             Ok(SearchHit {
                 id: r.get(0)?,
                 title: r.get(1)?,
                 snippet: r.get(2)?,
+                folder_id: r.get(3)?,
+                updated_at: r.get(4)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -1201,7 +1221,9 @@ pub(crate) mod tests {
             1
         );
         assert!(
-            n.search("weg", 10).unwrap().is_empty(),
+            n.search("weg", 10, SearchOrder::Relevance)
+                .unwrap()
+                .is_empty(),
             "Papierkorb nicht in der Suche"
         );
         // Abgleich behält Papierkorb-Zustand.
@@ -1249,7 +1271,7 @@ pub(crate) mod tests {
             None,
         )
         .unwrap();
-        let hits = n.search("apfel", 10).unwrap();
+        let hits = n.search("apfel", 10, SearchOrder::Relevance).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].title, "Rezept");
         assert!(
@@ -1257,12 +1279,48 @@ pub(crate) mod tests {
             "{}",
             hits[0].snippet
         );
-        assert_eq!(n.search("Gro", 10).unwrap().len(), 1, "remove_diacritics");
-        assert!(n.search("\"\"* OR ( NEAR", 10).is_ok());
+        assert_eq!(
+            n.search("Gro", 10, SearchOrder::Relevance).unwrap().len(),
+            1,
+            "remove_diacritics"
+        );
+        assert!(n.search("\"\"* OR ( NEAR", 10, SearchOrder::Recent).is_ok());
         assert_eq!(
             n.tags_of("Größenvergleich.md").unwrap(),
             ["maße", "vergleich"]
         );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn search_order_relevance_or_recent() {
+        let (mut n, dir) = vault();
+        // Älter, aber „birne“ steht im Titel und mehrfach im Text: bessere Relevanz.
+        let old = n.create("Birne", "Birne Birne Birne", None).unwrap();
+        let new = n
+            .create("Einkauf", "Milch, eine Birne", Some("Haus"))
+            .unwrap();
+        n.store
+            .conn()
+            .execute(
+                "UPDATE documents SET updated_at = 1000 WHERE id = ?1",
+                params![old.id],
+            )
+            .unwrap();
+        let ids = |order| -> Vec<String> {
+            n.search("birne", 10, order)
+                .unwrap()
+                .into_iter()
+                .map(|h| h.id)
+                .collect()
+        };
+        assert_eq!(
+            ids(SearchOrder::Relevance),
+            [old.id.clone(), new.id.clone()]
+        );
+        assert_eq!(ids(SearchOrder::Recent), [new.id.clone(), old.id]);
+        let hits = n.search("einkauf", 10, SearchOrder::Recent).unwrap();
+        assert_eq!(hits[0].folder_id.as_deref(), Some("Haus"));
         std::fs::remove_dir_all(dir).ok();
     }
 

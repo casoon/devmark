@@ -2,12 +2,13 @@
 //! Suche, Favoriten, Ordner, Verknüpfungen, Papierkorb und tägliches Backup des Index.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
 use devmark_notes::{
-    Document, Filter, Folder, Moves, Notes, Revision, create_backup, import_legacy, list_backups,
+    Document, Filter, Folder, Moves, Notes, Revision, SearchOrder, create_backup, import_legacy,
+    list_backups,
 };
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::{
@@ -53,12 +54,16 @@ pub struct NoteRow {
     pub folder_id: Option<String>,
     /// Tags der Notiz, unter dem Auszug.
     pub tags: Vec<String>,
+    /// Ordnerpfad als Brotkrumen („Projekte / Kunde X“), nur bei Suchtreffern.
+    pub crumbs: String,
 }
 
 pub struct NotesState {
     pub notes: Notes,
     pub data_dir: PathBuf,
     pub search: Entity<InputState>,
+    /// Reihenfolge der Suchtreffer; wird in `search-order` im Datenordner gemerkt.
+    pub search_order: SearchOrder,
     pub rows: Vec<NoteRow>,
     pub show_trash: bool,
     /// Navigation „Favoriten“: nur markierte Notizen.
@@ -77,6 +82,29 @@ pub struct NotesState {
     /// Ordner, der gerade umbenannt wird, mit Eingabefeld.
     renaming: Option<(String, Entity<InputState>, Subscription)>,
     _search_subscription: Subscription,
+}
+
+/// Gemerkte Reihenfolge der Suchtreffer; ohne Datei „Zuletzt geändert“, weil die Suche hier vor
+/// allem zum Wiederfinden dient.
+fn load_search_order(data_dir: &Path) -> SearchOrder {
+    match std::fs::read_to_string(data_dir.join("search-order")) {
+        Ok(value) if value.trim() == "relevance" => SearchOrder::Relevance,
+        _ => SearchOrder::Recent,
+    }
+}
+
+fn save_search_order(data_dir: &Path, order: SearchOrder) {
+    let value = match order {
+        SearchOrder::Relevance => "relevance",
+        SearchOrder::Recent => "recent",
+    };
+    std::fs::create_dir_all(data_dir).ok();
+    std::fs::write(data_dir.join("search-order"), value).ok();
+}
+
+/// „Projekte/Kunde X“ → „Projekte / Kunde X“; oberste Ebene → leer.
+fn crumbs(folder_id: Option<&str>) -> String {
+    folder_id.map(|f| f.replace('/', " / ")).unwrap_or_default()
 }
 
 /// Datenordner je Plattform (ohne zusätzliche Abhängigkeit).
@@ -180,10 +208,12 @@ impl NotesState {
                 }
             },
         );
+        let search_order = load_search_order(&data_dir);
         Some(Self {
             notes,
             data_dir,
             search,
+            search_order,
             rows: Vec::new(),
             show_trash: false,
             favorites_only: false,
@@ -339,24 +369,23 @@ impl Workspace {
         }
         let query = state.search.read(cx).value().trim().to_string();
         let rows = if !query.is_empty() && !state.show_trash {
-            state.notes.search(&query, 200).map(|hits| {
-                hits.into_iter()
-                    .map(|hit| NoteRow {
-                        favorite: false,
-                        folder_id: state
-                            .notes
-                            .get(&hit.id)
-                            .ok()
-                            .flatten()
-                            .and_then(|d| d.folder_id),
-                        tags: state.notes.tags_of(&hit.id).unwrap_or_default(),
-                        id: hit.id,
-                        title: hit.title,
-                        preview: hit.snippet.replace(['\n', '\r'], " "),
-                        time: String::new(),
-                    })
-                    .collect()
-            })
+            state
+                .notes
+                .search(&query, 200, state.search_order)
+                .map(|hits| {
+                    hits.into_iter()
+                        .map(|hit| NoteRow {
+                            favorite: false,
+                            crumbs: crumbs(hit.folder_id.as_deref()),
+                            folder_id: hit.folder_id,
+                            tags: state.notes.tags_of(&hit.id).unwrap_or_default(),
+                            id: hit.id,
+                            title: hit.title,
+                            preview: hit.snippet.replace(['\n', '\r'], " "),
+                            time: relative_time(hit.updated_at),
+                        })
+                        .collect()
+                })
         } else {
             let filter = Filter {
                 trash: state.show_trash,
@@ -385,6 +414,7 @@ impl Workspace {
                         favorite: d.favorite,
                         folder_id: d.folder_id.clone(),
                         tags: state.notes.tags_of(&d.id).unwrap_or_default(),
+                        crumbs: String::new(),
                     })
                     .collect()
             })
@@ -411,6 +441,18 @@ impl Workspace {
             state.history = Some((id.clone(), state.notes.revisions(&id).unwrap_or_default()));
         }
         cx.notify();
+    }
+
+    fn toggle_search_order(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = self.notes.as_mut() else {
+            return;
+        };
+        state.search_order = match state.search_order {
+            SearchOrder::Recent => SearchOrder::Relevance,
+            SearchOrder::Relevance => SearchOrder::Recent,
+        };
+        save_search_order(&state.data_dir, state.search_order);
+        self.refresh_notes(cx);
     }
 
     fn note_path(&self, document: &Document) -> PathBuf {
@@ -1524,6 +1566,17 @@ impl Workspace {
                                     .child(row.time.clone()),
                             ),
                     )
+                    .when(!row.crumbs.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .child(row.crumbs.clone()),
+                        )
+                    })
                     .when(!row.preview.is_empty(), |this| {
                         this.child(
                             div()
@@ -1541,13 +1594,34 @@ impl Workspace {
                     }),
             );
         }
+        let searching = !state.show_trash && !state.search.read(cx).value().trim().is_empty();
+        let order_label = match state.search_order {
+            SearchOrder::Recent => "Zuletzt",
+            SearchOrder::Relevance => "Relevanz",
+        };
         v_flex()
             .size_full()
             .child(
-                div()
+                h_flex()
                     .px_3()
                     .py_2()
-                    .child(Input::new(&state.search).small().cleanable(true)),
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Input::new(&state.search).small().cleanable(true)),
+                    )
+                    .when(searching, |this| {
+                        this.child(
+                            Button::new("search-order")
+                                .ghost()
+                                .small()
+                                .label(order_label)
+                                .tooltip("Treffer sortieren: zuletzt geändert oder beste Übereinstimmung")
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_search_order(cx))),
+                        )
+                    }),
             )
             .child(list)
             .into_any_element()

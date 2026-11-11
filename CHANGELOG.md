@@ -7,6 +7,7 @@ All notable changes to DevMark are listed here. DevMark follows
 
 ### Added
 
+- **Notes:** search hits show the folder path and can be sorted by last modified (default) or by relevance; the choice is remembered. See [Find](https://casoon.github.io/devmark/docs/guides/notes/#find).
 - **Export:** HTML pages follow light and dark mode, use the `accent` colour and get a navigation over all pages; with `base_url` in `.devmark/export.toml` the export writes a `sitemap.xml`. See [Export as HTML](https://casoon.github.io/devmark/docs/guides/print-and-pdf/#export-as-html).
 
 ### Changed

@@ -16,7 +16,7 @@ Since they are just files, any other program can open, version or [sync](../sync
 
 ## Find
 
-- **Full-text search** across all notes with `Cmd/Ctrl-Shift-F`.
+- **Full-text search** across all notes with `Cmd/Ctrl-Shift-F`. A hit shows its folder path (for example `Projects / Client X`) so notes with the same title can be told apart. The button next to the search field sorts the hits by “Zuletzt“ (last modified, the default) or “Relevanz“ (best match); DevMark remembers the choice.
 - **Tags** as `#tag` in the text or as `tags:` in the frontmatter. A note's tags are shown above the text; click one to filter the list.
 - **Favorites** are marked in the list; the “Favoriten“ view shows only those.
 
