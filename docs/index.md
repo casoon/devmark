@@ -1,25 +1,25 @@
 ---
-title: Dokumentation
-description: DevMark ist ein Desktop-Editor für Code, Notizen und längere Texte. Hier steht, wie man ihn baut, startet und benutzt.
+title: Documentation
+description: DevMark is a desktop editor for code, notes and long-form writing. This is how to build it, start it and use it.
 ---
 
-DevMark vereint drei Arbeitsweisen in einem Fenster: Dateien in einem Projektordner bearbeiten, Texte in Markdown oder Typst schreiben und als PDF setzen, und Notizen festhalten, die als normale Markdown-Dateien auf der Platte liegen.
+DevMark brings three ways of working into one window: editing files in a project folder, writing in Markdown or Typst and typesetting the result as a PDF, and keeping notes that live on disk as plain Markdown files.
 
-## Einstieg
+## Getting started
 
-- [Installation](einstieg/installation/) – aus dem Quellcode bauen, unter macOS als App.
-- [Erste Schritte](einstieg/erste-schritte/) – Workspace öffnen, Oberfläche, erste Notiz.
+- [Installation](getting-started/installation/) – build from source, as an app on macOS.
+- [First steps](getting-started/first-steps/) – open a workspace, find your way around, write a first note.
 
-## Anleitungen
+## Guides
 
-- [Schreiben in Markdown und Typst](anleitungen/schreiben/) – Formatleiste, Einfüge-Liste, Vorlagen.
-- [Druckvorschau und PDF](anleitungen/druck-und-pdf/) – Live-Vorschau, Export, Markdown → Typst.
-- [Notizen](anleitungen/notizen/) – Ordner, Tags, Verknüpfungen, Verlauf, Papierkorb.
-- [Notizen abgleichen](anleitungen/sync/) – Cloud-Ordner oder Git.
+- [Writing in Markdown and Typst](guides/writing/) – formatting bar, insert list, templates.
+- [Print preview and PDF](guides/print-and-pdf/) – live preview, export, Markdown → Typst.
+- [Notes](guides/notes/) – folders, tags, links, history, trash.
+- [Syncing notes](guides/sync/) – a cloud folder or Git.
 
-## Referenz
+## Reference
 
-- [Tastenkürzel](referenz/tastenkuerzel/)
-- [devmark-typst auf der Kommandozeile](referenz/devmark-typst/)
-- [Daten und Ordner](referenz/daten/)
-- [Aufbau des Projekts](referenz/aufbau/)
+- [Keyboard shortcuts](reference/shortcuts/)
+- [devmark-typst on the command line](reference/devmark-typst/)
+- [Data and folders](reference/data/)
+- [Project structure](reference/structure/)

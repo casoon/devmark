@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "type": "flow",
+  "locale": "en",
+  "showTitle": false,
+  "title": "From text to PDF",
+  "description": "A Markdown or MDX file is converted to Typst; a Typst file goes straight on. Typst typesetting turns it into the print preview next to the text and into the PDF. Everything runs offline.",
+  "source": "crates/writing/src/markdown.rs, crates/writing/src/pdf.rs",
+  "width": 480,
+  "height": 520,
+  "flow": {
+    "nodes": [
+      { "id": "md", "label": "Markdown / MDX", "sublabel": "with frontmatter", "kind": "start" },
+      { "id": "typ", "label": "Typst file", "kind": "start" },
+      { "id": "convert", "label": "Conversion", "sublabel": "Markdown → Typst" },
+      { "id": "compile", "label": "Typst typesetting", "sublabel": "offline, local cache" },
+      { "id": "preview", "label": "Print preview", "sublabel": "next to the text", "kind": "end" },
+      { "id": "pdf", "label": "PDF", "sublabel": "in the workspace", "kind": "end" }
+    ],
+    "edges": [
+      { "from": "md", "to": "convert" },
+      { "from": "convert", "to": "compile" },
+      { "from": "typ", "to": "compile" },
+      { "from": "compile", "to": "preview" },
+      { "from": "compile", "to": "pdf" }
+    ],
+    "mainPath": ["md", "convert", "compile", "pdf"],
+    "orientation": "portrait"
+  }
+}

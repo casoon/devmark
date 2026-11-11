@@ -1,0 +1,52 @@
+---
+title: Print preview and PDF
+description: Live preview next to the text, PDF export through Typst typesetting, and converting Markdown to Typst.
+order: 2
+---
+
+DevMark typesets Markdown and Typst with [Typst](https://typst.app). Everything runs offline; Typst packages are loaded from the local cache only.
+
+<Callout type="note">
+
+No Typst installation is needed. The typesetter is built into DevMark.
+
+</Callout>
+
+## Print preview
+
+`Cmd/Ctrl-Shift-V` opens the preview next to the text. It shows the typeset pages and follows as you type. In notes, links to other notes appear as text, not as links.
+
+## Export a PDF
+
+`Cmd/Ctrl-Shift-E` writes the document as a PDF into the workspace. Paper size, table of contents and numbering are controlled by the frontmatter at the top of the file:
+
+```markdown
+---
+title: "Quarterly report"
+author: "Platform team"
+date: "2026-11-11"
+lang: en
+toc: true
+numbering: true
+paper: a4
+---
+```
+
+| Field | Effect |
+|---|---|
+| `title`, `author`, `date` | Title block of the document |
+| `lang` | Language for hyphenation and quotation marks |
+| `toc` | Table of contents at the start |
+| `numbering` | Numbered headings |
+| `paper` | Paper size, e.g. `a4` |
+
+## What Markdown supports
+
+- CommonMark and GitHub Markdown with tables, footnotes and task lists
+- Callouts (`> [!NOTE]`) and LaTeX math
+- Frontmatter for the title block and page setup
+- MDX: imports and expressions are removed, callout components and `:::tip` blocks become callouts
+
+## Markdown → Typst
+
+`Cmd/Ctrl-Shift-T` converts the current Markdown document into a Typst file – for texts whose typesetting you want to refine by hand afterwards. The same conversion is available on the command line as [devmark-typst](../../reference/devmark-typst/).
