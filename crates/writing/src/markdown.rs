@@ -55,7 +55,9 @@ impl Options {
         let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
         let path = path.as_path();
         Self {
-            mdx: path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("mdx")),
+            mdx: path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("mdx")),
             base_dir: path.parent().map(Path::to_path_buf),
             output_dir: path.parent().map(Path::to_path_buf),
             source_name: path.file_name().map(|n| n.to_string_lossy().to_string()),
@@ -121,7 +123,10 @@ fn split_frontmatter(source: &str) -> (Metadata, &str) {
         let Some(rest) = source.strip_prefix(fence) else {
             continue;
         };
-        let Some(rest) = rest.strip_prefix('\n').or_else(|| rest.strip_prefix("\r\n")) else {
+        let Some(rest) = rest
+            .strip_prefix('\n')
+            .or_else(|| rest.strip_prefix("\r\n"))
+        else {
             continue;
         };
         let mut offset = 0;
@@ -151,7 +156,9 @@ fn preprocess_mdx(body: &str, warnings: &mut Vec<String>) -> String {
     for line in body.split_inclusive('\n') {
         let trimmed = line.trim_start();
         if let Some(open) = &fence {
-            if trimmed.starts_with(open.as_str()) && trimmed.trim_end().chars().all(|c| open.starts_with(c)) {
+            if trimmed.starts_with(open.as_str())
+                && trimmed.trim_end().chars().all(|c| open.starts_with(c))
+            {
                 fence = None;
             }
             out.push_str(line);
@@ -163,14 +170,18 @@ fn preprocess_mdx(body: &str, warnings: &mut Vec<String>) -> String {
         }
         if !in_tag && expr_depth == 0 && !in_comment {
             if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-                let marker: String = trimmed.chars().take_while(|&c| c == '`' || c == '~').collect();
+                let marker: String = trimmed
+                    .chars()
+                    .take_while(|&c| c == '`' || c == '~')
+                    .collect();
                 fence = Some(marker);
                 out.push_str(line);
                 continue;
             }
             if trimmed.starts_with("$$") {
                 // `$$ … $$` auf einer Zeile schaltet nicht um.
-                let single_line = trimmed.trim_end().len() > 2 && trimmed.trim_end().ends_with("$$");
+                let single_line =
+                    trimmed.trim_end().len() > 2 && trimmed.trim_end().ends_with("$$");
                 if !single_line {
                     math_block = !math_block;
                 }
@@ -181,7 +192,9 @@ fn preprocess_mdx(body: &str, warnings: &mut Vec<String>) -> String {
                 out.push_str(line);
                 continue;
             }
-            if !line.starts_with([' ', '\t']) && (line.starts_with("import ") || line.starts_with("export ")) {
+            if !line.starts_with([' ', '\t'])
+                && (line.starts_with("import ") || line.starts_with("export "))
+            {
                 removed_statements += 1;
                 skipping_statement = bracket_balance(line).max(0);
                 continue;
@@ -244,7 +257,12 @@ fn preprocess_mdx(body: &str, warnings: &mut Vec<String>) -> String {
                 continue;
             }
             if code_run == 0 && math_run == 0 {
-                if !in_tag && c == '<' && chars.get(i + 1).is_some_and(|n| n.is_ascii_alphabetic() || *n == '/') {
+                if !in_tag
+                    && c == '<'
+                    && chars
+                        .get(i + 1)
+                        .is_some_and(|n| n.is_ascii_alphabetic() || *n == '/')
+                {
                     in_tag = true;
                 } else if in_tag && c == '>' {
                     in_tag = false;
@@ -263,7 +281,9 @@ fn preprocess_mdx(body: &str, warnings: &mut Vec<String>) -> String {
                                 if cleaned.ends_with('=') {
                                     let inner: String = chars[i + 1..i + len - 1].iter().collect();
                                     cleaned.push('"');
-                                    cleaned.push_str(&inner.trim().replace('"', "'").replace('\n', " "));
+                                    cleaned.push_str(
+                                        &inner.trim().replace('"', "'").replace('\n', " "),
+                                    );
                                     cleaned.push('"');
                                 }
                             } else {
@@ -310,10 +330,14 @@ fn preprocess_mdx(body: &str, warnings: &mut Vec<String>) -> String {
     }
 
     if removed_statements > 0 {
-        warnings.push(format!("MDX: {removed_statements} import/export-Anweisung(en) entfernt."));
+        warnings.push(format!(
+            "MDX: {removed_statements} import/export-Anweisung(en) entfernt."
+        ));
     }
     if removed_expressions > 0 {
-        warnings.push(format!("MDX: {removed_expressions} JavaScript-Ausdruck/Ausdrücke {{…}} entfernt."));
+        warnings.push(format!(
+            "MDX: {removed_expressions} JavaScript-Ausdruck/Ausdrücke {{…}} entfernt."
+        ));
     }
     out
 }
@@ -327,14 +351,21 @@ fn preprocess_directives(body: &str) -> String {
     for line in body.split_inclusive('\n') {
         let trimmed = line.trim();
         if let Some(marker) = &fence {
-            if trimmed.starts_with(marker.as_str()) && trimmed.chars().all(|c| marker.starts_with(c)) {
+            if trimmed.starts_with(marker.as_str())
+                && trimmed.chars().all(|c| marker.starts_with(c))
+            {
                 fence = None;
             }
             out.push_str(line);
             continue;
         }
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            fence = Some(trimmed.chars().take_while(|&c| c == '`' || c == '~').collect());
+            fence = Some(
+                trimmed
+                    .chars()
+                    .take_while(|&c| c == '`' || c == '~')
+                    .collect(),
+            );
             out.push_str(line);
             continue;
         }
@@ -347,7 +378,10 @@ fn preprocess_directives(body: &str) -> String {
                     continue;
                 }
             } else {
-                let kind: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+                let kind: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                    .collect();
                 if !kind.is_empty() {
                     let title = rest[kind.len()..]
                         .trim()
@@ -359,7 +393,11 @@ fn preprocess_directives(body: &str) -> String {
                         .trim()
                         .replace('"', "'");
                     open += 1;
-                    let title = if title.is_empty() { String::new() } else { format!(" title=\"{title}\"") };
+                    let title = if title.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" title=\"{title}\"")
+                    };
                     out.push_str(&format!("\n<Callout type=\"{kind}\"{title}>\n\n"));
                     continue;
                 }
@@ -428,14 +466,23 @@ fn parser_options() -> pulldown_cmark::Options {
 enum Frame {
     Root,
     Item,
-    List { start: Option<u64>, items: Vec<String>, loose: bool },
+    List {
+        start: Option<u64>,
+        items: Vec<String>,
+        loose: bool,
+    },
     BlockQuote(Option<BlockQuoteKind>),
     Footnote(String),
-    Code { lang: String },
+    Code {
+        lang: String,
+    },
     HtmlBlock,
     Table(TableState),
     Cell,
-    Image { dest: String, title: String },
+    Image {
+        dest: String,
+        title: String,
+    },
     Term,
     Definition,
 }
@@ -555,8 +602,14 @@ impl<'a> Renderer<'a> {
         let line_start = self.at_line_start();
         let after_expr = self.after_expr;
         // `1` und `. Text` können als getrennte Text-Events kommen.
-        let current_line = self.buf().rsplit('\n').next().unwrap_or_default().trim_start();
-        let digit_prefix = !current_line.is_empty() && current_line.chars().all(|c| c.is_ascii_digit());
+        let current_line = self
+            .buf()
+            .rsplit('\n')
+            .next()
+            .unwrap_or_default()
+            .trim_start();
+        let digit_prefix =
+            !current_line.is_empty() && current_line.chars().all(|c| c.is_ascii_digit());
         let mut escaped = escape_markup(text, line_start, after_expr);
         if digit_prefix && text.starts_with('.') {
             escaped.insert(0, '\\');
@@ -565,7 +618,10 @@ impl<'a> Renderer<'a> {
     }
 
     fn in_code(&self) -> bool {
-        matches!(self.frames.last(), Some((Frame::Code { .. } | Frame::HtmlBlock, _)))
+        matches!(
+            self.frames.last(),
+            Some((Frame::Code { .. } | Frame::HtmlBlock, _))
+        )
     }
 
     fn render_markdown(&mut self, markdown: &str) {
@@ -587,15 +643,28 @@ impl<'a> Renderer<'a> {
 
     /// Absatz, der nur aus einem Bild besteht → `figure`.
     fn try_figure(&mut self, events: &[Event]) -> Option<usize> {
-        let [Event::Start(Tag::Paragraph), Event::Start(Tag::Image { dest_url, title, .. }), rest @ ..] = events else {
+        let [
+            Event::Start(Tag::Paragraph),
+            Event::Start(Tag::Image {
+                dest_url, title, ..
+            }),
+            rest @ ..,
+        ] = events
+        else {
             return None;
         };
-        let end = rest.iter().position(|e| matches!(e, Event::End(TagEnd::Image)))?;
+        let end = rest
+            .iter()
+            .position(|e| matches!(e, Event::End(TagEnd::Image)))?;
         if !matches!(rest.get(end + 1), Some(Event::End(TagEnd::Paragraph))) {
             return None;
         }
         let alt = plain_text(&rest[..end]);
-        let caption = if title.is_empty() { alt.clone() } else { title.to_string() };
+        let caption = if title.is_empty() {
+            alt.clone()
+        } else {
+            title.to_string()
+        };
         self.block_break();
         let image = self.image_call(dest_url, &alt, None);
         match image {
@@ -699,14 +768,18 @@ impl<'a> Renderer<'a> {
                     self.block_break();
                 }
                 self.frames.push((
-                    Frame::List { start: *start, items: Vec::new(), loose: false },
+                    Frame::List {
+                        start: *start,
+                        items: Vec::new(),
+                        loose: false,
+                    },
                     String::new(),
                 ));
             }
             Tag::Item => self.frames.push((Frame::Item, String::new())),
-            Tag::FootnoteDefinition(label) => {
-                self.frames.push((Frame::Footnote(label.to_string()), String::new()))
-            }
+            Tag::FootnoteDefinition(label) => self
+                .frames
+                .push((Frame::Footnote(label.to_string()), String::new())),
             Tag::DefinitionList => self.block_break(),
             Tag::DefinitionListTitle => self.frames.push((Frame::Term, String::new())),
             Tag::DefinitionListDefinition => self.frames.push((Frame::Definition, String::new())),
@@ -714,7 +787,10 @@ impl<'a> Renderer<'a> {
                 self.block_break();
                 self.has_table = true;
                 self.frames.push((
-                    Frame::Table(TableState { alignments: alignments.clone(), ..Default::default() }),
+                    Frame::Table(TableState {
+                        alignments: alignments.clone(),
+                        ..Default::default()
+                    }),
                     String::new(),
                 ));
             }
@@ -729,9 +805,18 @@ impl<'a> Renderer<'a> {
             Tag::Strikethrough => self.write("#strike["),
             Tag::Superscript => self.write("#super["),
             Tag::Subscript => self.write("#sub["),
-            Tag::Link { link_type, dest_url, .. } => self.start_link(*link_type, dest_url),
-            Tag::Image { dest_url, title, .. } => self.frames.push((
-                Frame::Image { dest: dest_url.to_string(), title: title.to_string() },
+            Tag::Link {
+                link_type,
+                dest_url,
+                ..
+            } => self.start_link(*link_type, dest_url),
+            Tag::Image {
+                dest_url, title, ..
+            } => self.frames.push((
+                Frame::Image {
+                    dest: dest_url.to_string(),
+                    title: title.to_string(),
+                },
                 String::new(),
             )),
             Tag::MetadataBlock(_) => {}
@@ -758,13 +843,18 @@ impl<'a> Renderer<'a> {
             }
             TagEnd::BlockQuote(_) => {
                 let (frame, body) = self.pop_frame();
-                let Frame::BlockQuote(kind) = frame else { return };
+                let Frame::BlockQuote(kind) = frame else {
+                    return;
+                };
                 let body = body.trim();
                 match kind {
                     None => self.write(&format!("#quote(block: true)[\n{body}\n]")),
                     Some(kind) => {
                         self.needs.insert("callout");
-                        self.write(&format!("#callout(kind: \"{}\")[\n{body}\n]", callout_kind(kind)));
+                        self.write(&format!(
+                            "#callout(kind: \"{}\")[\n{body}\n]",
+                            callout_kind(kind)
+                        ));
                     }
                 }
                 self.after_expr = true;
@@ -783,7 +873,14 @@ impl<'a> Renderer<'a> {
             }
             TagEnd::List(_) => {
                 let (frame, _) = self.pop_frame();
-                let Frame::List { start, items, loose } = frame else { return };
+                let Frame::List {
+                    start,
+                    items,
+                    loose,
+                } = frame
+                else {
+                    return;
+                };
                 let separator = if loose { "\n\n" } else { "\n" };
                 let mut lines = Vec::with_capacity(items.len());
                 for (ix, item) in items.iter().enumerate() {
@@ -861,7 +958,9 @@ impl<'a> Renderer<'a> {
             }
             TagEnd::Image => {
                 let (frame, alt) = self.pop_frame();
-                let Frame::Image { dest, title } = frame else { return };
+                let Frame::Image { dest, title } = frame else {
+                    return;
+                };
                 let alt = if alt.is_empty() { title } else { alt };
                 match self.image_call(&dest, &alt, Some("1.2em")) {
                     ImageCall::Image(call) => {
@@ -892,15 +991,24 @@ impl<'a> Renderer<'a> {
         let n = self.frames.len();
         if n >= 2
             && let (Frame::Item, _) = &self.frames[n - 1]
-                && let (Frame::List { loose, .. }, _) = &mut self.frames[n - 2] {
-                    *loose = true;
-                }
+            && let (Frame::List { loose, .. }, _) = &mut self.frames[n - 2]
+        {
+            *loose = true;
+        }
     }
 
     fn unique_label(&mut self, slug: &str) -> String {
-        let base = if slug.is_empty() { "abschnitt".to_string() } else { slug.to_string() };
+        let base = if slug.is_empty() {
+            "abschnitt".to_string()
+        } else {
+            slug.to_string()
+        };
         let count = self.slugs.entry(base.clone()).or_insert(0);
-        let label = if *count == 0 { base.clone() } else { format!("{base}-{count}") };
+        let label = if *count == 0 {
+            base.clone()
+        } else {
+            format!("{base}-{count}")
+        };
         *count += 1;
         self.labels.insert(label.clone());
         label
@@ -934,7 +1042,10 @@ impl<'a> Renderer<'a> {
                     err.lines().next().unwrap_or_default()
                 ));
                 let block = if display { ", block: true" } else { "" };
-                self.write(&format!("#raw(\"{}\", lang: \"latex\"{block}", escape_string(latex.trim())));
+                self.write(&format!(
+                    "#raw(\"{}\", lang: \"latex\"{block}",
+                    escape_string(latex.trim())
+                ));
                 self.close_expr(")");
             }
         }
@@ -967,8 +1078,13 @@ impl<'a> Renderer<'a> {
     }
 
     fn image_call(&mut self, dest: &str, alt: &str, height: Option<&str>) -> ImageCall {
-        let label = if alt.trim().is_empty() { "Bild" } else { alt.trim() };
-        if dest.starts_with("http://") || dest.starts_with("https://") || dest.starts_with("data:") {
+        let label = if alt.trim().is_empty() {
+            "Bild"
+        } else {
+            alt.trim()
+        };
+        if dest.starts_with("http://") || dest.starts_with("https://") || dest.starts_with("data:")
+        {
             self.warn_once(
                 &format!("remote:{dest}"),
                 format!("Entferntes Bild nicht eingebettet (offline): {dest}"),
@@ -988,24 +1104,34 @@ impl<'a> Renderer<'a> {
             .extension()
             .map(|e| e.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_default();
-        if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "pdf") {
-            self.warn_once(&format!("format:{dest}"), format!("Bildformat nicht unterstützt: {dest}"));
+        if !matches!(
+            ext.as_str(),
+            "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "pdf"
+        ) {
+            self.warn_once(
+                &format!("format:{dest}"),
+                format!("Bildformat nicht unterstützt: {dest}"),
+            );
             return ImageCall::Placeholder(format!("\\[{}\\]", escape_markup(label, false, false)));
         }
         let mut path = decoded.clone();
         if let Some(base) = &self.options.base_dir {
             let absolute = base.join(decoded.trim_start_matches('/'));
             if !absolute.exists() {
-                self.warn_once(&format!("missing:{dest}"), format!("Bild nicht gefunden: {dest}"));
+                self.warn_once(
+                    &format!("missing:{dest}"),
+                    format!("Bild nicht gefunden: {dest}"),
+                );
                 return ImageCall::Placeholder(format!(
                     "\\[Bild fehlt: {}\\]",
                     escape_markup(&decoded, false, false)
                 ));
             }
             if let Some(output) = &self.options.output_dir
-                && let Some(relative) = relative_path(&absolute, output) {
-                    path = relative.to_string_lossy().replace('\\', "/");
-                }
+                && let Some(relative) = relative_path(&absolute, output)
+            {
+                path = relative.to_string_lossy().replace('\\', "/");
+            }
         }
         let mut args = format!("image(\"{}\"", escape_string(&path));
         if let Some(height) = height {
@@ -1047,9 +1173,11 @@ impl<'a> Renderer<'a> {
                         self.text(&decode_entities(&text));
                     }
                 }
-                HtmlToken::Open { name, attrs, self_closing } => {
-                    self.html_open(&name, &attrs, self_closing || is_void(&name), block)
-                }
+                HtmlToken::Open {
+                    name,
+                    attrs,
+                    self_closing,
+                } => self.html_open(&name, &attrs, self_closing || is_void(&name), block),
                 HtmlToken::Close { name } => self.html_close(&name),
             }
         }
@@ -1063,8 +1191,16 @@ impl<'a> Renderer<'a> {
         // Ein einzelner Absatz ohne Umbruch bleibt inline (z. B. `<summary>Titel</summary>`).
         let inline = matches!(
             events.as_slice(),
-            [Event::Start(Tag::Paragraph), .., Event::End(TagEnd::Paragraph)]
-        ) && events.iter().filter(|e| matches!(e, Event::Start(Tag::Paragraph))).count() == 1
+            [
+                Event::Start(Tag::Paragraph),
+                ..,
+                Event::End(TagEnd::Paragraph)
+            ]
+        ) && events
+            .iter()
+            .filter(|e| matches!(e, Event::Start(Tag::Paragraph)))
+            .count()
+            == 1
             && !self.at_line_start();
         if inline {
             self.render_events(&events[1..events.len() - 1]);
@@ -1082,7 +1218,14 @@ impl<'a> Renderer<'a> {
         };
         let lower = name.to_ascii_lowercase();
 
-        if let Some(kind) = admonition_kind(name, attr("type").or(attr("variant")).or(attr("kind")).or(attr("status")).as_deref()) {
+        if let Some(kind) = admonition_kind(
+            name,
+            attr("type")
+                .or(attr("variant"))
+                .or(attr("kind"))
+                .or(attr("status"))
+                .as_deref(),
+        ) {
             self.needs.insert("callout");
             self.block_break();
             let title = attr("title")
@@ -1152,7 +1295,9 @@ impl<'a> Renderer<'a> {
             "b" | "strong" => self.wrap_html(name, "#strong[", "]"),
             "i" | "em" | "cite" | "dfn" | "var" => self.wrap_html(name, "#emph[", "]"),
             "small" => self.wrap_html(name, "#text(size: 0.85em)[", "]"),
-            "code" | "samp" | "tt" => self.wrap_html(name, "#text(font: \"DejaVu Sans Mono\", size: 0.9em)[", "]"),
+            "code" | "samp" | "tt" => {
+                self.wrap_html(name, "#text(font: \"DejaVu Sans Mono\", size: 0.9em)[", "]")
+            }
             "center" => {
                 self.block_break();
                 self.wrap_html(name, "#align(center)[\n", "\n]\n");
@@ -1184,9 +1329,22 @@ impl<'a> Renderer<'a> {
                     self.push_html(name, "");
                 }
             }
-            _ if !name.chars().next().is_some_and(char::is_uppercase) && !is_html_element(&lower) => {
+            _ if !name.chars().next().is_some_and(char::is_uppercase)
+                && !is_html_element(&lower) =>
+            {
                 // Kein HTML, kein JSX: wörtlich gemeint (z. B. `<Platzhalter>` in Fließtext).
-                let literal = format!("<{name}{}{}>", attrs.iter().map(|(k, v)| if v.is_empty() { format!(" {k}") } else { format!(" {k}=\"{v}\"") }).collect::<String>(), if void { "/" } else { "" });
+                let literal = format!(
+                    "<{name}{}{}>",
+                    attrs
+                        .iter()
+                        .map(|(k, v)| if v.is_empty() {
+                            format!(" {k}")
+                        } else {
+                            format!(" {k}=\"{v}\"")
+                        })
+                        .collect::<String>(),
+                    if void { "/" } else { "" }
+                );
                 self.text(&literal);
             }
             _ => {
@@ -1220,7 +1378,14 @@ impl<'a> Renderer<'a> {
     }
 
     fn html_close(&mut self, name: &str) {
-        if !name.chars().next().is_some_and(char::is_uppercase) && !name.is_empty() && !is_html_element(&name.to_ascii_lowercase()) && !matches!(name.to_ascii_lowercase().as_str(), "tabitem" | "tabs" | "fragment") {
+        if !name.chars().next().is_some_and(char::is_uppercase)
+            && !name.is_empty()
+            && !is_html_element(&name.to_ascii_lowercase())
+            && !matches!(
+                name.to_ascii_lowercase().as_str(),
+                "tabitem" | "tabs" | "fragment"
+            )
+        {
             self.text(&format!("</{name}>"));
             return;
         }
@@ -1265,7 +1430,9 @@ impl<'a> Renderer<'a> {
             .cloned()
             .collect();
         for label in missing {
-            self.warnings.push(format!("Interner Link auf unbekannten Abschnitt „#{label}“ – als Text übernommen."));
+            self.warnings.push(format!(
+                "Interner Link auf unbekannten Abschnitt „#{label}“ – als Text übernommen."
+            ));
             body = body.replace(&format!("#link(<{label}>)["), "#[");
         }
 
@@ -1276,7 +1443,9 @@ impl<'a> Renderer<'a> {
         let mut used = HashSet::new();
         // Ersetzter Text kann selbst Verweise enthalten; die werden in späteren Runden aufgelöst.
         while let Some(start) = body.find(FOOTNOTE_START) {
-            let Some(len) = body[start..].find(FOOTNOTE_END) else { break };
+            let Some(len) = body[start..].find(FOOTNOTE_END) else {
+                break;
+            };
             let label = body[start + FOOTNOTE_START.len_utf8()..start + len].to_string();
             let end = start + len + FOOTNOTE_END.len_utf8();
             let typst_label = format!("fn-{}", slugify(&label));
@@ -1286,14 +1455,16 @@ impl<'a> Renderer<'a> {
                 used.insert(label.clone());
                 format!("#footnote[{text}]<{typst_label}>")
             } else {
-                self.warnings.push(format!("Fußnote „{label}“ ohne Definition."));
+                self.warnings
+                    .push(format!("Fußnote „{label}“ ohne Definition."));
                 format!("\\[^{}\\]", escape_markup(&label, false, false))
             };
             body.replace_range(start..end, &replacement);
         }
         let unused = self.footnotes.keys().filter(|k| !used.contains(*k)).count();
         if unused > 0 {
-            self.warnings.push(format!("{unused} Fußnote(n) ohne Verweis weggelassen."));
+            self.warnings
+                .push(format!("{unused} Fußnote(n) ohne Verweis weggelassen."));
         }
         body.trim().to_string()
     }
@@ -1312,11 +1483,19 @@ impl<'a> Renderer<'a> {
             document.push(format!("title: \"{}\"", escape_string(title)));
         }
         if !meta.authors.is_empty() {
-            let authors: Vec<String> = meta.authors.iter().map(|a| format!("\"{}\"", escape_string(a))).collect();
+            let authors: Vec<String> = meta
+                .authors
+                .iter()
+                .map(|a| format!("\"{}\"", escape_string(a)))
+                .collect();
             document.push(format!("author: ({},)", authors.join(", ")));
         }
         if !meta.keywords.is_empty() {
-            let keywords: Vec<String> = meta.keywords.iter().map(|k| format!("\"{}\"", escape_string(k))).collect();
+            let keywords: Vec<String> = meta
+                .keywords
+                .iter()
+                .map(|k| format!("\"{}\"", escape_string(k)))
+                .collect();
             document.push(format!("keywords: ({},)", keywords.join(", ")));
         }
         if let Some(date) = meta.date.as_deref().and_then(typst_date) {
@@ -1325,12 +1504,18 @@ impl<'a> Renderer<'a> {
         if !document.is_empty() {
             out.push_str(&format!("#set document({})\n", document.join(", ")));
         }
-        let paper = meta.paper.clone().unwrap_or_else(|| self.options.paper.clone());
+        let paper = meta
+            .paper
+            .clone()
+            .unwrap_or_else(|| self.options.paper.clone());
         out.push_str(&format!(
             "#set page(paper: \"{}\", margin: (x: 2.5cm, top: 2.5cm, bottom: 3cm), numbering: \"1\")\n",
             escape_string(&paper)
         ));
-        out.push_str(&format!("#set text(lang: \"{}\", size: 11pt)\n", escape_string(lang)));
+        out.push_str(&format!(
+            "#set text(lang: \"{}\", size: 11pt)\n",
+            escape_string(lang)
+        ));
         out.push_str("#set par(justify: true)\n");
         if meta.numbering == Some(true) {
             out.push_str("#set heading(numbering: \"1.1\")\n");
@@ -1382,7 +1567,11 @@ impl<'a> Renderer<'a> {
                     escape_markup(subtitle, false, false)
                 ));
             }
-            let mut byline: Vec<String> = meta.authors.iter().map(|a| escape_markup(a, false, false)).collect();
+            let mut byline: Vec<String> = meta
+                .authors
+                .iter()
+                .map(|a| escape_markup(a, false, false))
+                .collect();
             if let Some(date) = &meta.date {
                 byline.push(escape_markup(date, false, false));
             }
@@ -1455,7 +1644,10 @@ pub fn escape_markup(text: &str, line_start: bool, after_expr: bool) -> String {
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
         let next = chars.peek().copied();
-        let in_url = out.ends_with("http:") || out.ends_with("https:") || out.ends_with("http:/") || out.ends_with("https:/");
+        let in_url = out.ends_with("http:")
+            || out.ends_with("https:")
+            || out.ends_with("http:/")
+            || out.ends_with("https:/");
         let escape = match c {
             '\\' | '#' | '*' | '_' | '`' | '$' | '<' | '>' | '@' | '[' | ']' | '~' => true,
             '=' | '+' => at_start,
@@ -1466,7 +1658,9 @@ pub fn escape_markup(text: &str, line_start: bool, after_expr: bool) -> String {
             '.' if at_start && prev.is_some_and(|p| p.is_ascii_digit()) => true,
             // Nach `#f[…]` würde `(` als Argumentliste und `.x` als Feldzugriff gelesen.
             '(' => prev.is_none() && after_expr,
-            '.' => prev.is_none() && after_expr && next.is_some_and(|n| n.is_alphabetic() || n == '_'),
+            '.' => {
+                prev.is_none() && after_expr && next.is_some_and(|n| n.is_alphabetic() || n == '_')
+            }
             _ => false,
         };
         if escape {
@@ -1545,7 +1739,10 @@ pub fn slugify(text: &str) -> String {
 
 fn code_lang(info: &str) -> String {
     // MDX/Docusaurus: ```ts title="x.ts" {1,3}
-    let first = info.split(|c: char| c.is_whitespace() || c == '{' || c == ',').next().unwrap_or("");
+    let first = info
+        .split(|c: char| c.is_whitespace() || c == '{' || c == ',')
+        .next()
+        .unwrap_or("");
     first
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '#' | '.' | '_'))
@@ -1613,19 +1810,116 @@ fn admonition_kind(name: &str, variant: Option<&str>) -> Option<&'static str> {
 fn is_html_element(name: &str) -> bool {
     matches!(
         name,
-        "a" | "abbr" | "address" | "area" | "article" | "aside" | "audio" | "b" | "bdi" | "bdo"
-            | "blockquote" | "body" | "br" | "button" | "canvas" | "caption" | "center" | "cite"
-            | "code" | "col" | "colgroup" | "data" | "dd" | "del" | "details" | "dfn" | "dialog"
-            | "div" | "dl" | "dt" | "em" | "embed" | "fieldset" | "figcaption" | "figure"
-            | "font" | "footer" | "form" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "head"
-            | "header" | "hr" | "html" | "i" | "iframe" | "img" | "input" | "ins" | "kbd"
-            | "label" | "legend" | "li" | "link" | "main" | "map" | "mark" | "meta" | "meter"
-            | "nav" | "noscript" | "object" | "ol" | "optgroup" | "option" | "output" | "p"
-            | "picture" | "pre" | "progress" | "q" | "rp" | "rt" | "ruby" | "s" | "samp"
-            | "script" | "section" | "select" | "small" | "source" | "span" | "strike"
-            | "strong" | "style" | "sub" | "summary" | "sup" | "svg" | "table" | "tbody" | "td"
-            | "template" | "textarea" | "tfoot" | "th" | "thead" | "time" | "title" | "tr"
-            | "track" | "tt" | "u" | "ul" | "var" | "video" | "wbr"
+        "a" | "abbr"
+            | "address"
+            | "area"
+            | "article"
+            | "aside"
+            | "audio"
+            | "b"
+            | "bdi"
+            | "bdo"
+            | "blockquote"
+            | "body"
+            | "br"
+            | "button"
+            | "canvas"
+            | "caption"
+            | "center"
+            | "cite"
+            | "code"
+            | "col"
+            | "colgroup"
+            | "data"
+            | "dd"
+            | "del"
+            | "details"
+            | "dfn"
+            | "dialog"
+            | "div"
+            | "dl"
+            | "dt"
+            | "em"
+            | "embed"
+            | "fieldset"
+            | "figcaption"
+            | "figure"
+            | "font"
+            | "footer"
+            | "form"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "head"
+            | "header"
+            | "hr"
+            | "html"
+            | "i"
+            | "iframe"
+            | "img"
+            | "input"
+            | "ins"
+            | "kbd"
+            | "label"
+            | "legend"
+            | "li"
+            | "link"
+            | "main"
+            | "map"
+            | "mark"
+            | "meta"
+            | "meter"
+            | "nav"
+            | "noscript"
+            | "object"
+            | "ol"
+            | "optgroup"
+            | "option"
+            | "output"
+            | "p"
+            | "picture"
+            | "pre"
+            | "progress"
+            | "q"
+            | "rp"
+            | "rt"
+            | "ruby"
+            | "s"
+            | "samp"
+            | "script"
+            | "section"
+            | "select"
+            | "small"
+            | "source"
+            | "span"
+            | "strike"
+            | "strong"
+            | "style"
+            | "sub"
+            | "summary"
+            | "sup"
+            | "svg"
+            | "table"
+            | "tbody"
+            | "td"
+            | "template"
+            | "textarea"
+            | "tfoot"
+            | "th"
+            | "thead"
+            | "time"
+            | "title"
+            | "tr"
+            | "track"
+            | "tt"
+            | "u"
+            | "ul"
+            | "var"
+            | "video"
+            | "wbr"
     )
 }
 
@@ -1642,7 +1936,10 @@ fn css_length(value: &str) -> Option<String> {
         return percent.trim().parse::<f64>().ok().map(|p| format!("{p}%"));
     }
     let number = value.trim_end_matches("px");
-    number.parse::<f64>().ok().map(|px| format!("{}pt", (px * 0.75 * 100.0).round() / 100.0))
+    number
+        .parse::<f64>()
+        .ok()
+        .map(|px| format!("{}pt", (px * 0.75 * 100.0).round() / 100.0))
 }
 
 fn typst_date(date: &str) -> Option<String> {
@@ -1653,7 +1950,9 @@ fn typst_date(date: &str) -> Option<String> {
     let day: u8 = parts.next()?.parse().ok()?;
     (1..=12).contains(&month).then_some(())?;
     (1..=31).contains(&day).then_some(())?;
-    Some(format!("datetime(year: {year}, month: {month}, day: {day})"))
+    Some(format!(
+        "datetime(year: {year}, month: {month}, day: {day})"
+    ))
 }
 
 fn percent_decode(text: &str) -> String {
@@ -1727,8 +2026,14 @@ fn normalize(path: &Path) -> PathBuf {
 
 #[derive(Debug, PartialEq)]
 enum HtmlToken {
-    Open { name: String, attrs: Vec<(String, String)>, self_closing: bool },
-    Close { name: String },
+    Open {
+        name: String,
+        attrs: Vec<(String, String)>,
+        self_closing: bool,
+    },
+    Close {
+        name: String,
+    },
     Text(String),
     Comment(String),
 }
@@ -1746,12 +2051,13 @@ fn tokenize_html(html: &str) -> Vec<HtmlToken> {
             continue;
         }
         if rest.starts_with('<')
-            && let Some((token, len)) = parse_tag(rest) {
-                flush_text(&mut text, &mut tokens);
-                tokens.push(token);
-                rest = &rest[len..];
-                continue;
-            }
+            && let Some((token, len)) = parse_tag(rest)
+        {
+            flush_text(&mut text, &mut tokens);
+            tokens.push(token);
+            rest = &rest[len..];
+            continue;
+        }
         let c = rest.chars().next().unwrap();
         text.push(c);
         rest = &rest[c.len_utf8()..];
@@ -1774,7 +2080,10 @@ fn parse_tag(input: &str) -> Option<(HtmlToken, usize)> {
         i += 1;
     }
     let name_start = i;
-    while chars.get(i).is_some_and(|(_, c)| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ':')) {
+    while chars
+        .get(i)
+        .is_some_and(|(_, c)| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+    {
         i += 1;
     }
     let name: String = chars[name_start..i].iter().map(|(_, c)| c).collect();
@@ -1798,7 +2107,11 @@ fn parse_tag(input: &str) -> Option<(HtmlToken, usize)> {
                 let token = if closing {
                     HtmlToken::Close { name }
                 } else {
-                    HtmlToken::Open { name, attrs, self_closing }
+                    HtmlToken::Open {
+                        name,
+                        attrs,
+                        self_closing,
+                    }
                 };
                 return Some((token, len));
             }
@@ -1825,7 +2138,10 @@ fn parse_tag(input: &str) -> Option<(HtmlToken, usize)> {
             }
             _ => {
                 let key_start = i;
-                while chars.get(i).is_some_and(|(_, c)| !c.is_whitespace() && !matches!(c, '=' | '>' | '/')) {
+                while chars
+                    .get(i)
+                    .is_some_and(|(_, c)| !c.is_whitespace() && !matches!(c, '=' | '>' | '/'))
+                {
                     i += 1;
                 }
                 let key: String = chars[key_start..i].iter().map(|(_, c)| c).collect();
@@ -1847,7 +2163,10 @@ fn parse_tag(input: &str) -> Option<(HtmlToken, usize)> {
                             }
                             // Aus JSX `{'text'}` / `{`text`}` (siehe preprocess_mdx).
                             for inner in ['\'', '`'] {
-                                if value.len() >= 2 && value.starts_with(inner) && value.ends_with(inner) {
+                                if value.len() >= 2
+                                    && value.starts_with(inner)
+                                    && value.ends_with(inner)
+                                {
                                     value = value[1..value.len() - 1].to_string();
                                 }
                             }
@@ -1873,14 +2192,20 @@ fn parse_tag(input: &str) -> Option<(HtmlToken, usize)> {
                             // `{"text"}` / `{'text'}` / `{`text`}` → text
                             let trimmed = value.trim();
                             for q in ['"', '\'', '`'] {
-                                if trimmed.len() >= 2 && trimmed.starts_with(q) && trimmed.ends_with(q) {
+                                if trimmed.len() >= 2
+                                    && trimmed.starts_with(q)
+                                    && trimmed.ends_with(q)
+                                {
                                     value = trimmed[1..trimmed.len() - 1].to_string();
                                     break;
                                 }
                             }
                         }
                         _ => {
-                            while chars.get(i).is_some_and(|(_, c)| !c.is_whitespace() && *c != '>') {
+                            while chars
+                                .get(i)
+                                .is_some_and(|(_, c)| !c.is_whitespace() && *c != '>')
+                            {
                                 value.push(chars[i].1);
                                 i += 1;
                             }
@@ -1898,18 +2223,28 @@ mod tests {
     use super::*;
 
     fn body(md: &str) -> String {
-        let options = Options { standalone: false, ..Options::default() };
+        let options = Options {
+            standalone: false,
+            ..Options::default()
+        };
         markdown_to_typst(md, &options).typst
     }
 
     fn mdx(md: &str) -> Conversion {
-        let options = Options { standalone: false, mdx: true, ..Options::default() };
+        let options = Options {
+            standalone: false,
+            mdx: true,
+            ..Options::default()
+        };
         markdown_to_typst(md, &options)
     }
 
     #[test]
     fn headings_get_labels() {
-        assert_eq!(body("# Hallo Welt\n\n## Größe & Form"), "= Hallo Welt <hallo-welt>\n\n== Größe & Form <größe--form>\n");
+        assert_eq!(
+            body("# Hallo Welt\n\n## Größe & Form"),
+            "= Hallo Welt <hallo-welt>\n\n== Größe & Form <größe--form>\n"
+        );
     }
 
     #[test]
@@ -1922,7 +2257,10 @@ mod tests {
 
     #[test]
     fn escapes_typst_syntax() {
-        assert_eq!(body("Preis: 5 $ #1 @user a < b > c a_b"), "Preis: 5 \\$ \\#1 \\@user a \\< b \\> c a\\_b\n");
+        assert_eq!(
+            body("Preis: 5 $ #1 @user a < b > c a_b"),
+            "Preis: 5 \\$ \\#1 \\@user a \\< b \\> c a\\_b\n"
+        );
         assert_eq!(body("1\\. nicht nummeriert"), "1\\. nicht nummeriert\n");
         assert_eq!(body("a -- b // c"), "a \\-\\- b \\/\\/ c\n");
         assert_eq!(body("Siehe https://typst.app"), "Siehe https://typst.app\n");
@@ -1937,24 +2275,39 @@ mod tests {
     fn lists_nest_with_indentation() {
         assert_eq!(body("- a\n- b\n  - c\n"), "- a\n- b\n  - c\n");
         assert_eq!(body("3. drei\n4. vier\n"), "3. drei\n4. vier\n");
-        assert_eq!(body("- [x] fertig\n- [ ] offen\n"), "- #task(true) fertig\n- #task(false) offen\n");
+        assert_eq!(
+            body("- [x] fertig\n- [ ] offen\n"),
+            "- #task(true) fertig\n- #task(false) offen\n"
+        );
     }
 
     #[test]
     fn loose_lists_keep_blank_lines() {
-        assert_eq!(body("- a\n\n  zweiter Absatz\n\n- b\n"), "- a\n\n  zweiter Absatz\n\n- b\n");
+        assert_eq!(
+            body("- a\n\n  zweiter Absatz\n\n- b\n"),
+            "- a\n\n  zweiter Absatz\n\n- b\n"
+        );
     }
 
     #[test]
     fn code_blocks() {
-        assert_eq!(body("```rust title=\"x\"\nfn main() {}\n```"), "```rust\nfn main() {}\n```\n");
+        assert_eq!(
+            body("```rust title=\"x\"\nfn main() {}\n```"),
+            "```rust\nfn main() {}\n```\n"
+        );
         assert_eq!(body("````md\n```\n````"), "````md\n```\n````\n");
     }
 
     #[test]
     fn links_and_internal_anchors() {
-        assert_eq!(body("[Typst](https://typst.app)"), "#link(\"https://typst.app\")[Typst]\n");
-        assert_eq!(body("# Ziel\n\n[hin](#ziel)"), "= Ziel <ziel>\n\n#link(<ziel>)[hin]\n");
+        assert_eq!(
+            body("[Typst](https://typst.app)"),
+            "#link(\"https://typst.app\")[Typst]\n"
+        );
+        assert_eq!(
+            body("# Ziel\n\n[hin](#ziel)"),
+            "= Ziel <ziel>\n\n#link(<ziel>)[hin]\n"
+        );
         assert_eq!(body("[weg](#nirgends)"), "#[weg]\n");
     }
 
@@ -1976,19 +2329,28 @@ mod tests {
 
     #[test]
     fn math() {
-        assert_eq!(body("Es gilt $a^2 + b^2 = c^2$."), "Es gilt $a^(2) + b^(2) = c^(2)$.\n");
+        assert_eq!(
+            body("Es gilt $a^2 + b^2 = c^2$."),
+            "Es gilt $a^(2) + b^(2) = c^(2)$.\n"
+        );
         assert_eq!(body("$$\n\\frac{1}{2}\n$$"), "$ frac(1,2) $\n");
     }
 
     #[test]
     fn github_alerts_and_quotes() {
-        assert_eq!(body("> [!WARNING]\n> Achtung"), "#callout(kind: \"warning\")[\nAchtung\n]\n");
+        assert_eq!(
+            body("> [!WARNING]\n> Achtung"),
+            "#callout(kind: \"warning\")[\nAchtung\n]\n"
+        );
         assert_eq!(body("> Zitat"), "#quote(block: true)[\nZitat\n]\n");
     }
 
     #[test]
     fn frontmatter_is_read() {
-        let conversion = markdown_to_typst("---\ntitle: Test\nlang: en-US\n---\n\nText", &Options::default());
+        let conversion = markdown_to_typst(
+            "---\ntitle: Test\nlang: en-US\n---\n\nText",
+            &Options::default(),
+        );
         assert_eq!(conversion.metadata.title.as_deref(), Some("Test"));
         assert!(conversion.typst.contains("#set text(lang: \"en\""));
         assert!(conversion.typst.contains("#set document(title: \"Test\")"));
@@ -1996,7 +2358,9 @@ mod tests {
 
     #[test]
     fn mdx_imports_and_components() {
-        let conversion = mdx("import Callout from './Callout'\nexport const meta = {\n  a: 1,\n}\n\n# Titel\n\n<Callout type=\"warning\" title=\"Achtung\">\n\nInhalt **fett**\n\n</Callout>\n\n{/* Kommentar */}\n\nText {props.x} weiter.\n");
+        let conversion = mdx(
+            "import Callout from './Callout'\nexport const meta = {\n  a: 1,\n}\n\n# Titel\n\n<Callout type=\"warning\" title=\"Achtung\">\n\nInhalt **fett**\n\n</Callout>\n\n{/* Kommentar */}\n\nText {props.x} weiter.\n",
+        );
         assert_eq!(
             conversion.typst,
             "= Titel <titel>\n\n#callout(kind: \"warning\", title: [Achtung])[\nInhalt #strong[fett]\n]\n\nText  weiter.\n"
@@ -2006,13 +2370,18 @@ mod tests {
 
     #[test]
     fn mdx_jsx_attributes() {
-        let conversion = mdx("<Callout type={\"warning\"} {...rest}>\n\nText\n\n</Callout>\n\n<Chart data={[1, 2]} />\n");
+        let conversion = mdx(
+            "<Callout type={\"warning\"} {...rest}>\n\nText\n\n</Callout>\n\n<Chart data={[1, 2]} />\n",
+        );
         assert_eq!(conversion.typst, "#callout(kind: \"warning\")[\nText\n]\n");
     }
 
     #[test]
     fn mdx_keeps_math_braces() {
-        assert_eq!(mdx("Energie $E = \\frac{hc}{\\lambda}$ {x}\n").typst, "Energie $E = frac(h c,lambda)$\n");
+        assert_eq!(
+            mdx("Energie $E = \\frac{hc}{\\lambda}$ {x}\n").typst,
+            "Energie $E = frac(h c,lambda)$\n"
+        );
         assert!(mdx("$$\n\\sqrt{2}\n$$\n").typst.contains("mitexsqrt(2)"));
     }
 
@@ -2028,13 +2397,19 @@ mod tests {
             body(":::tip Mein Titel\n\nInhalt\n\n:::\n"),
             "#callout(kind: \"tip\", title: [Mein Titel])[\nInhalt\n]\n"
         );
-        assert_eq!(body(":::note[Starlight]\nText\n:::\n"), "#callout(kind: \"note\", title: [Starlight])[\nText\n]\n");
+        assert_eq!(
+            body(":::note[Starlight]\nText\n:::\n"),
+            "#callout(kind: \"note\", title: [Starlight])[\nText\n]\n"
+        );
     }
 
     #[test]
     fn mdx_component_without_blank_lines() {
         let conversion = mdx("<Note>\nKurzer *Hinweis*\n</Note>\n");
-        assert_eq!(conversion.typst, "#callout(kind: \"note\")[\nKurzer #emph[Hinweis]\n]\n");
+        assert_eq!(
+            conversion.typst,
+            "#callout(kind: \"note\")[\nKurzer #emph[Hinweis]\n]\n"
+        );
     }
 
     #[test]
@@ -2046,7 +2421,10 @@ mod tests {
 
     #[test]
     fn inline_html() {
-        assert_eq!(body("H<sub>2</sub>O und x<sup>2</sup>, <kbd>Cmd</kbd>"), "H#sub[2]O und x#super[2], #kbd[Cmd]\n");
+        assert_eq!(
+            body("H<sub>2</sub>O und x<sup>2</sup>, <kbd>Cmd</kbd>"),
+            "H#sub[2]O und x#super[2], #kbd[Cmd]\n"
+        );
         assert_eq!(body("<!-- geheim -->\n\nText"), "// geheim\n\nText\n");
     }
 
@@ -2063,10 +2441,18 @@ mod tests {
         assert_eq!(
             tokenize_html("<a href=\"x\">t</a><br/>"),
             vec![
-                HtmlToken::Open { name: "a".into(), attrs: vec![("href".into(), "x".into())], self_closing: false },
+                HtmlToken::Open {
+                    name: "a".into(),
+                    attrs: vec![("href".into(), "x".into())],
+                    self_closing: false
+                },
                 HtmlToken::Text("t".into()),
                 HtmlToken::Close { name: "a".into() },
-                HtmlToken::Open { name: "br".into(), attrs: vec![], self_closing: true },
+                HtmlToken::Open {
+                    name: "br".into(),
+                    attrs: vec![],
+                    self_closing: true
+                },
             ]
         );
     }

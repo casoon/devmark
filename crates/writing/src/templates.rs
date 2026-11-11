@@ -49,9 +49,15 @@ impl DocType {
 
     pub fn description(self) -> &'static str {
         match self {
-            DocType::Article => "Fachartikel oder Blogbeitrag mit Titel, Einleitung und Abschnitten.",
-            DocType::Report => "Bericht mit Titelseite, Inhaltsverzeichnis und nummerierten Kapiteln.",
-            DocType::Letter => "Geschäftsbrief nach DIN 5008 mit Anschrift, Betreff und Grußformel.",
+            DocType::Article => {
+                "Fachartikel oder Blogbeitrag mit Titel, Einleitung und Abschnitten."
+            }
+            DocType::Report => {
+                "Bericht mit Titelseite, Inhaltsverzeichnis und nummerierten Kapiteln."
+            }
+            DocType::Letter => {
+                "Geschäftsbrief nach DIN 5008 mit Anschrift, Betreff und Grußformel."
+            }
             DocType::Chapter => "Kapitel eines Buchs oder Manuskripts.",
             DocType::Readme => "Projektbeschreibung für ein Software-Repository.",
             DocType::Note => "Kurze Notiz ohne Gliederung.",
@@ -81,12 +87,24 @@ impl DocType {
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
             .join("-");
-        if slug.is_empty() { self.label().to_lowercase() } else { slug }
+        if slug.is_empty() {
+            self.label().to_lowercase()
+        } else {
+            slug
+        }
     }
 
     pub fn render(self, syntax: Syntax, info: &DocInfo) -> String {
-        let title = if info.title.trim().is_empty() { self.label() } else { info.title.trim() };
-        let lang = if info.lang.trim().is_empty() { "de" } else { info.lang.trim() };
+        let title = if info.title.trim().is_empty() {
+            self.label()
+        } else {
+            info.title.trim()
+        };
+        let lang = if info.lang.trim().is_empty() {
+            "de"
+        } else {
+            info.lang.trim()
+        };
         match syntax {
             Syntax::Markdown => self.markdown(title, lang, info),
             Syntax::Typst => self.typst(title, lang, info),
@@ -96,7 +114,10 @@ impl DocType {
     fn markdown(self, title: &str, lang: &str, info: &DocInfo) -> String {
         let mut front = vec![format!("title: \"{}\"", title.replace('"', "\\\""))];
         if !info.author.trim().is_empty() {
-            front.push(format!("author: \"{}\"", info.author.trim().replace('"', "\\\"")));
+            front.push(format!(
+                "author: \"{}\"",
+                info.author.trim().replace('"', "\\\"")
+            ));
         }
         if !info.date.trim().is_empty() {
             front.push(format!("date: {}", info.date.trim()));
@@ -153,18 +174,28 @@ impl DocType {
                 out.push_str("#v(80mm)\n");
                 out.push_str(&format!(
                     "#align(right)[Ort, {}]\n\n",
-                    if date.is_empty() { "#datetime.today().display(\"[day].[month].[year]\")".to_string() } else { date.to_string() }
+                    if date.is_empty() {
+                        "#datetime.today().display(\"[day].[month].[year]\")".to_string()
+                    } else {
+                        date.to_string()
+                    }
                 ));
                 out.push_str(&format!("*{}*\n\n", typst_text(title)));
                 out.push_str("Sehr geehrte Damen und Herren,\n\nText des Briefs …\n\nMit freundlichen Grüßen\n\n#v(1cm)\n");
-                out.push_str(&format!("{}\n", typst_text(if author.is_empty() { "Name" } else { author })));
+                out.push_str(&format!(
+                    "{}\n",
+                    typst_text(if author.is_empty() { "Name" } else { author })
+                ));
             }
             DocType::Report => {
                 out.push_str("#set page(paper: \"a4\", margin: 2.5cm, numbering: \"1\")\n");
                 out.push_str(&lang_line);
                 out.push_str("#set par(justify: true)\n#set heading(numbering: \"1.1\")\n\n");
                 out.push_str("// Titelseite\n#page(numbering: none)[\n  #v(30%)\n");
-                out.push_str(&format!("  #text(size: 2.2em, weight: \"bold\")[{}]\n", typst_text(title)));
+                out.push_str(&format!(
+                    "  #text(size: 2.2em, weight: \"bold\")[{}]\n",
+                    typst_text(title)
+                ));
                 if !author.is_empty() {
                     out.push_str(&format!("  #v(1em)\n  {}\n", typst_text(author)));
                 }
@@ -178,7 +209,10 @@ impl DocType {
                 out.push_str("#set page(paper: \"a5\", margin: (inside: 2.2cm, outside: 1.6cm, y: 2cm), numbering: \"1\")\n");
                 out.push_str(&lang_line.replace("11pt", "10.5pt"));
                 out.push_str("#set par(justify: true, first-line-indent: 1em)\n\n");
-                out.push_str(&format!("= {}\n\nErster Absatz des Kapitels …\n\n== Abschnitt\n\nText …\n", typst_text(title)));
+                out.push_str(&format!(
+                    "= {}\n\nErster Absatz des Kapitels …\n\n== Abschnitt\n\nText …\n",
+                    typst_text(title)
+                ));
             }
             _ => {
                 out.push_str("#set page(paper: \"a4\", margin: 2.5cm, numbering: \"1\")\n");
@@ -241,7 +275,10 @@ mod tests {
 
     #[test]
     fn all_markdown_templates_convert_and_compile() {
-        let info = DocInfo { title: "Test \"zitiert\"".into(), ..Default::default() };
+        let info = DocInfo {
+            title: "Test \"zitiert\"".into(),
+            ..Default::default()
+        };
         for &doc in DocType::ALL {
             let source = doc.render(Syntax::Markdown, &info);
             let typst = crate::markdown_to_typst(&source, &crate::Options::default()).typst;
@@ -259,7 +296,10 @@ mod tests {
 
     #[test]
     fn file_names() {
-        let info = DocInfo { title: "Über Größe!".into(), ..Default::default() };
+        let info = DocInfo {
+            title: "Über Größe!".into(),
+            ..Default::default()
+        };
         assert_eq!(DocType::Article.file_stem(&info), "ueber-groesse");
         assert_eq!(DocType::Readme.file_stem(&info), "README");
     }

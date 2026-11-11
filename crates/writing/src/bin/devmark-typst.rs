@@ -34,16 +34,22 @@ fn parse_args() -> Result<Args, String> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Err(USAGE.into()),
-            "-o" | "--output" => output = Some(PathBuf::from(args.next().ok_or("-o braucht einen Pfad")?)),
+            "-o" | "--output" => {
+                output = Some(PathBuf::from(args.next().ok_or("-o braucht einen Pfad")?))
+            }
             "--pdf" => {
-                let path = args.next_if(|next| !next.starts_with('-')).map(PathBuf::from);
+                let path = args
+                    .next_if(|next| !next.starts_with('-'))
+                    .map(PathBuf::from);
                 pdf = Some(path);
             }
             "--lang" => lang = Some(args.next().ok_or("--lang braucht einen Wert")?),
             "--paper" => paper = Some(args.next().ok_or("--paper braucht einen Wert")?),
             "--body-only" => body_only = true,
             "--stdout" => stdout = true,
-            other if other.starts_with('-') => return Err(format!("Unbekannte Option {other}\n{USAGE}")),
+            other if other.starts_with('-') => {
+                return Err(format!("Unbekannte Option {other}\n{USAGE}"));
+            }
             other => {
                 if input.replace(PathBuf::from(other)).is_some() {
                     return Err(format!("Nur eine Eingabedatei erlaubt\n{USAGE}"));
@@ -81,7 +87,10 @@ fn run() -> Result<(), String> {
     let (typst, typ_path) = if is_typst {
         (source, args.input.clone())
     } else {
-        let typ_path = args.output.clone().unwrap_or_else(|| args.input.with_extension("typ"));
+        let typ_path = args
+            .output
+            .clone()
+            .unwrap_or_else(|| args.input.with_extension("typ"));
         let mut options = Options::for_file(&args.input);
         options.output_dir = Some(parent_dir(&typ_path));
         options.standalone = !args.body_only;
@@ -111,7 +120,8 @@ fn run() -> Result<(), String> {
         for warning in &compiled.warnings {
             eprintln!("{warning}");
         }
-        std::fs::write(&pdf_path, &compiled.pdf).map_err(|err| format!("{}: {err}", pdf_path.display()))?;
+        std::fs::write(&pdf_path, &compiled.pdf)
+            .map_err(|err| format!("{}: {err}", pdf_path.display()))?;
         eprintln!("PDF: {} ({} Seiten)", pdf_path.display(), compiled.pages);
     } else if is_typst {
         return Err("Für .typ-Eingaben --pdf angeben.".into());

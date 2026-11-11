@@ -61,13 +61,20 @@ impl Store {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         schema::migrate(&conn)?;
         let device_id = match conn
-            .query_row("SELECT value FROM meta WHERE key = 'device_id'", [], |row| row.get(0))
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'device_id'",
+                [],
+                |row| row.get(0),
+            )
             .optional()?
         {
             Some(id) => id,
             None => {
                 let id = new_id();
-                conn.execute("INSERT INTO meta(key, value) VALUES ('device_id', ?1)", params![id])?;
+                conn.execute(
+                    "INSERT INTO meta(key, value) VALUES ('device_id', ?1)",
+                    params![id],
+                )?;
                 id
             }
         };
@@ -87,7 +94,8 @@ impl Store {
     }
 
     pub fn schema_version(&self) -> Result<i64> {
-        self.conn.pragma_query_value(None, "user_version", |row| row.get(0))
+        self.conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
     }
 
     /// Konsistente Kopie der laufenden Datenbank (SQLite-Backup-API, auch während Schreibzugriffen).
@@ -139,7 +147,10 @@ mod tests {
         let first = Store::open(&path).unwrap();
         let device = first.device_id().to_string();
         assert_eq!(first.schema_version().unwrap(), schema::LATEST);
-        let mode: String = first.conn().pragma_query_value(None, "journal_mode", |r| r.get(0)).unwrap();
+        let mode: String = first
+            .conn()
+            .pragma_query_value(None, "journal_mode", |r| r.get(0))
+            .unwrap();
         assert_eq!(mode, "wal");
         drop(first);
         let second = Store::open(&path).unwrap();

@@ -31,14 +31,21 @@ pub fn import_legacy(legacy: &Path, notes: &mut Notes) -> Result<usize> {
     }
     let store = Store::open(legacy)?;
     let conn = store.conn();
-    let done: Option<String> =
-        conn.query_row("SELECT value FROM meta WHERE key = ?1", params![MIGRATED_KEY], |r| r.get(0)).optional()?;
+    let done: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            params![MIGRATED_KEY],
+            |r| r.get(0),
+        )
+        .optional()?;
     if done.is_some() {
         return Ok(0);
     }
     let folders: HashMap<String, (Option<String>, String)> = {
-        let mut stmt = conn.prepare("SELECT id, parent_id, name FROM folders WHERE deleted_at IS NULL")?;
-        stmt.query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?.collect::<rusqlite::Result<_>>()?
+        let mut stmt =
+            conn.prepare("SELECT id, parent_id, name FROM folders WHERE deleted_at IS NULL")?;
+        stmt.query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?
+            .collect::<rusqlite::Result<_>>()?
     };
     let documents: Vec<LegacyDocument> = {
         let mut stmt =
@@ -70,7 +77,11 @@ pub fn import_legacy(legacy: &Path, notes: &mut Notes) -> Result<usize> {
         let extension = if document.typst { "typ" } else { "md" };
         let id = (1..)
             .map(|n| {
-                let name = if n == 1 { format!("{stem}.{extension}") } else { format!("{stem} {n}.{extension}") };
+                let name = if n == 1 {
+                    format!("{stem}.{extension}")
+                } else {
+                    format!("{stem} {n}.{extension}")
+                };
                 crate::join(dir.as_deref(), &name)
             })
             .find(|id| !taken.contains(id) && !notes.path_of(id).exists())
@@ -80,7 +91,12 @@ pub fn import_legacy(legacy: &Path, notes: &mut Notes) -> Result<usize> {
     }
     let by_title: HashMap<String, &str> = documents
         .iter()
-        .map(|d| (display_title(&d.title, &d.content).to_lowercase(), targets[&d.id].as_str()))
+        .map(|d| {
+            (
+                display_title(&d.title, &d.content).to_lowercase(),
+                targets[&d.id].as_str(),
+            )
+        })
         .collect();
 
     for document in &documents {
@@ -101,9 +117,13 @@ pub fn import_legacy(legacy: &Path, notes: &mut Notes) -> Result<usize> {
         if document.favorite {
             notes.set_favorite(id, true)?;
         }
-        let mut stmt = conn.prepare("SELECT id, title, content, created_at FROM revisions WHERE document_id = ?1")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, title, content, created_at FROM revisions WHERE document_id = ?1",
+        )?;
         let revisions: Vec<(String, String, String, i64)> = stmt
-            .query_map(params![document.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .query_map(params![document.id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?
             .collect::<rusqlite::Result<_>>()?;
         if notes.get(id)?.is_some() {
             for (rev_id, title, content, created_at) in revisions {
@@ -123,7 +143,10 @@ pub fn import_legacy(legacy: &Path, notes: &mut Notes) -> Result<usize> {
 }
 
 /// Ordnerpfad (Teile) aus der früheren Ordnertabelle.
-fn folder_path(folders: &HashMap<String, (Option<String>, String)>, id: Option<&str>) -> Vec<String> {
+fn folder_path(
+    folders: &HashMap<String, (Option<String>, String)>,
+    id: Option<&str>,
+) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = id.map(str::to_string);
     // Zyklen (fehlerhafte Daten) dürfen nicht hängen.
@@ -139,7 +162,12 @@ fn folder_path(folders: &HashMap<String, (Option<String>, String)>, id: Option<&
 }
 
 /// `[[Titel|id]]` / `[[Titel]]` → `[Titel](relativer/pfad.md)`; Unauflösbares bleibt stehen.
-fn convert_links(content: &str, source: &str, targets: &HashMap<String, String>, by_title: &HashMap<String, &str>) -> String {
+fn convert_links(
+    content: &str,
+    source: &str,
+    targets: &HashMap<String, String>,
+    by_title: &HashMap<String, &str>,
+) -> String {
     let mut out = String::with_capacity(content.len());
     let mut rest = content;
     while let Some(start) = rest.find("[[") {
@@ -157,7 +185,9 @@ fn convert_links(content: &str, source: &str, targets: &HashMap<String, String>,
             .filter(|target| target.ends_with(".md") && !target.starts_with(".trash/"));
         out.push_str(&rest[..start]);
         match target {
-            Some(target) if !inner.contains('\n') => out.push_str(&link_markup(title, source, target)),
+            Some(target) if !inner.contains('\n') => {
+                out.push_str(&link_markup(title, source, target))
+            }
             _ => out.push_str(&rest[start..start + 4 + len]),
         }
         rest = &rest[start + 4 + len..];
@@ -184,7 +214,15 @@ mod tests {
             c.execute("INSERT INTO folders(id, name, created_at, updated_at, device_id) VALUES ('f1', 'Arbeit', ?1, ?1, ?2)", params![now, d]).unwrap();
             for (id, folder, title, content, format, fav, deleted) in [
                 ("a", Some("f1"), "", "# Ziel\nText", "markdown", 1, None),
-                ("b", None, "Quelle", "Siehe [[Ziel|a]] und [[ziel]] und [[Fehlt]]", "markdown", 0, None),
+                (
+                    "b",
+                    None,
+                    "Quelle",
+                    "Siehe [[Ziel|a]] und [[ziel]] und [[Fehlt]]",
+                    "markdown",
+                    0,
+                    None,
+                ),
                 ("c", None, "Satz", "= Typst", "typst", 0, None),
                 ("d", None, "Alt", "weg", "markdown", 0, Some(now)),
             ] {

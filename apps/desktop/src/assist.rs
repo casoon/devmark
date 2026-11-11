@@ -7,11 +7,14 @@ use std::rc::Rc;
 
 use devmark_notes::{NoteLink, link_markup, note_links, resolve};
 use devmark_writing::authoring::{self, Action, Syntax};
-use gpui_kit::component::input::{CompletionProvider, DefinitionProvider, HoverProvider, Position, Rope, RopeExt};
+use gpui_kit::component::input::{
+    CompletionProvider, DefinitionProvider, HoverProvider, Position, Rope, RopeExt,
+};
 use gpui_kit::{App, Task, Window};
 use lsp_types::{
     CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit,
-    Documentation, Hover, HoverContents, LocationLink, MarkupContent, MarkupKind, Range, TextEdit, Uri,
+    Documentation, Hover, HoverContents, LocationLink, MarkupContent, MarkupKind, Range, TextEdit,
+    Uri,
 };
 
 /// Notizen für Verknüpfungen: (id, Titel), von der Notizliste aktuell gehalten.
@@ -50,13 +53,21 @@ impl WritingAssist {
 
     /// Wurde gerade eine angebotene `/`-Einfügung übernommen (Text endet am Cursor)? Dann
     /// ihre Platzhalter im ganzen Text.
-    pub fn accepted_snippet(&self, text: &Rope, cursor: usize) -> Option<Vec<std::ops::Range<usize>>> {
+    pub fn accepted_snippet(
+        &self,
+        text: &Rope,
+        cursor: usize,
+    ) -> Option<Vec<std::ops::Range<usize>>> {
         let mut offered = self.offered.borrow_mut();
         let (slash, snippets) = offered.as_ref()?;
         let slash = (*slash <= cursor).then_some(*slash)?;
         let inserted = text.slice(slash..cursor).to_string();
         let snippet = snippets.iter().find(|s| s.text == inserted)?;
-        let placeholders = snippet.placeholders.iter().map(|r| slash + r.start..slash + r.end).collect();
+        let placeholders = snippet
+            .placeholders
+            .iter()
+            .map(|r| slash + r.start..slash + r.end)
+            .collect();
         *offered = None;
         Some(placeholders)
     }
@@ -66,23 +77,40 @@ impl WritingAssist {
         let index = self.notes.as_ref()?;
         let position = text.offset_to_position(offset);
         let line_start = text.position_to_offset(&Position::new(position.line, 0));
-        let line_end = text.position_to_offset(&Position::new(position.line + 1, 0)).max(line_start);
+        let line_end = text
+            .position_to_offset(&Position::new(position.line + 1, 0))
+            .max(line_start);
         let line = text.slice(line_start..line_end).to_string();
         let column = offset - line_start;
-        let mut link = note_links(&line).into_iter().find(|l| l.range.contains(&column))?;
+        let mut link = note_links(&line)
+            .into_iter()
+            .find(|l| l.range.contains(&column))?;
         link.range = line_start + link.range.start..line_start + link.range.end;
         let id = resolve(&self.source.borrow(), &link.target)
             .filter(|id| index.borrow().iter().any(|(known, _)| known == id));
         Some((link, id))
     }
 
-    fn link_completions(&self, index: &NoteIndex, text: &Rope, offset: usize) -> Option<Vec<CompletionItem>> {
+    fn link_completions(
+        &self,
+        index: &NoteIndex,
+        text: &Rope,
+        offset: usize,
+    ) -> Option<Vec<CompletionItem>> {
         let (line_start, prefix) = Self::line_prefix(text, offset);
         let (start, query) = link_query(&prefix)?;
         // Schon getippte schließende Klammern mit ersetzen.
         let position = text.offset_to_position(offset);
-        let line_end = text.position_to_offset(&Position::new(position.line + 1, 0)).max(offset);
-        let closing = text.slice(offset..line_end).to_string().chars().take(2).take_while(|&c| c == ']').count();
+        let line_end = text
+            .position_to_offset(&Position::new(position.line + 1, 0))
+            .max(offset);
+        let closing = text
+            .slice(offset..line_end)
+            .to_string()
+            .chars()
+            .take(2)
+            .take_while(|&c| c == ']')
+            .count();
         let range = Range::new(
             text.offset_to_position(line_start + start),
             text.offset_to_position(offset + closing),
@@ -108,7 +136,10 @@ impl WritingAssist {
                     sort_text: Some(format!("{ix:03}")),
                     // Siehe unten: Umlaute im Label.
                     filter_text: Some(String::new()),
-                    text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: link_markup(title, &source, id) })),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                        range,
+                        new_text: link_markup(title, &source, id),
+                    })),
                     ..Default::default()
                 })
                 .collect(),
@@ -145,7 +176,10 @@ impl CompletionProvider for WritingAssist {
         };
         let query = query.to_lowercase();
         let slash = line_start + indent;
-        let range = Range::new(text.offset_to_position(slash), text.offset_to_position(offset));
+        let range = Range::new(
+            text.offset_to_position(slash),
+            text.offset_to_position(offset),
+        );
 
         let mut snippets = Vec::new();
         let items = Action::ALL
@@ -161,7 +195,10 @@ impl CompletionProvider for WritingAssist {
                 // Einfügetext = Ergebnis der Aktion auf einer leeren Zeile, mit Platzhaltern.
                 let edit = authoring::apply(action, self.syntax, "", 0..0);
                 let snippet = edit.apply_to("");
-                snippets.push(Snippet { text: snippet.clone(), placeholders: edit.placeholders });
+                snippets.push(Snippet {
+                    text: snippet.clone(),
+                    placeholders: edit.placeholders,
+                });
                 CompletionItem {
                     label: action.label().to_string(),
                     kind: Some(CompletionItemKind::SNIPPET),
@@ -174,7 +211,10 @@ impl CompletionProvider for WritingAssist {
                     // gpui-kit 0.7.3 hebt `filter_text.len()` Bytes des Labels hervor und schneidet
                     // dabei Umlaute („Fußnote“) mitten im Zeichen → Absturz. Leer = keine Hervorhebung.
                     filter_text: Some(String::new()),
-                    text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: snippet })),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                        range,
+                        new_text: snippet,
+                    })),
                     ..Default::default()
                 }
             })
@@ -186,7 +226,9 @@ impl CompletionProvider for WritingAssist {
     /// `/` bzw. `[[` öffnet die Liste; weitere Zeichen verfeinern sie (ohne `/` am Zeilenanfang
     /// oder offenes `[[` liefert `completions` nichts, dann bleibt die Liste zu).
     fn is_completion_trigger(&self, _offset: usize, new_text: &str, _cx: &mut App) -> bool {
-        new_text == "/" || new_text == "[" || (new_text.chars().count() == 1 && new_text.chars().all(char::is_alphanumeric))
+        new_text == "/"
+            || new_text == "["
+            || (new_text.chars().count() == 1 && new_text.chars().all(char::is_alphanumeric))
     }
 }
 
@@ -205,10 +247,16 @@ impl HoverProvider for WritingAssist {
             });
             let value = match title {
                 Some(title) => format!("Notiz **{title}** – Cmd-Klick öffnet sie."),
-                None => format!("Keine Notiz „{}“ gefunden (gelöscht oder im Papierkorb?).", link.target),
+                None => format!(
+                    "Keine Notiz „{}“ gefunden (gelöscht oder im Papierkorb?).",
+                    link.target
+                ),
             };
             return Task::ready(Ok(Some(Hover {
-                contents: HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value }),
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value,
+                }),
                 range: None,
             })));
         }
@@ -217,9 +265,17 @@ impl HoverProvider for WritingAssist {
         let line_end = text.position_to_offset(&Position::new(position.line + 1, 0));
         let line = text.slice(line_start..line_end.max(line_start)).to_string();
         let word = text.word_at(offset);
-        let help = explain(self.syntax, line.trim_end_matches('\n'), offset - line_start, &word);
+        let help = explain(
+            self.syntax,
+            line.trim_end_matches('\n'),
+            offset - line_start,
+            &word,
+        );
         Task::ready(Ok(help.map(|value| Hover {
-            contents: HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value }),
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            }),
             range: None,
         })))
     }
@@ -265,12 +321,20 @@ fn explain(syntax: Syntax, line: &str, column: usize, word: &str) -> Option<Stri
             let level = trimmed.chars().take_while(|&c| c == '=').count().min(3) as u8;
             Some(Action::Heading(level))
         }
-        _ if at_marker && (trimmed.starts_with("- [ ]") || trimmed.starts_with("- [x]")) => Some(Action::TaskList),
-        _ if at_marker && (trimmed.starts_with("- ") || trimmed.starts_with("* ")) => Some(Action::BulletList),
+        _ if at_marker && (trimmed.starts_with("- [ ]") || trimmed.starts_with("- [x]")) => {
+            Some(Action::TaskList)
+        }
+        _ if at_marker && (trimmed.starts_with("- ") || trimmed.starts_with("* ")) => {
+            Some(Action::BulletList)
+        }
         Syntax::Typst if at_marker && trimmed.starts_with("+ ") => Some(Action::NumberedList),
         Syntax::Markdown if at_marker && trimmed.starts_with("> [!") => Some(Action::Callout),
         Syntax::Markdown if at_marker && trimmed.starts_with('>') => Some(Action::Quote),
-        Syntax::Markdown if at_marker && trimmed.chars().next().is_some_and(|c| c.is_ascii_digit()) && trimmed.contains(". ") => {
+        Syntax::Markdown
+            if at_marker
+                && trimmed.chars().next().is_some_and(|c| c.is_ascii_digit())
+                && trimmed.contains(". ") =>
+        {
             Some(Action::NumberedList)
         }
         _ if at_marker && trimmed.starts_with("```") => Some(Action::CodeBlock),
@@ -310,8 +374,16 @@ mod tests {
 
     #[test]
     fn explains_markdown_headings_and_typst_functions() {
-        assert!(explain(Syntax::Markdown, "## Titel", 1, "").unwrap().contains("Überschrift 2"));
-        assert!(explain(Syntax::Typst, "Text #footnote[x]", 7, "footnote").unwrap().contains("Fußnote"));
+        assert!(
+            explain(Syntax::Markdown, "## Titel", 1, "")
+                .unwrap()
+                .contains("Überschrift 2")
+        );
+        assert!(
+            explain(Syntax::Typst, "Text #footnote[x]", 7, "footnote")
+                .unwrap()
+                .contains("Fußnote")
+        );
         assert!(explain(Syntax::Markdown, "Normaler Text", 3, "Normaler").is_none());
     }
 

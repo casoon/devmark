@@ -5,7 +5,9 @@ use std::path::Path;
 use devmark_writing::{Options, compile_pdf, markdown_to_typst};
 
 fn convert_and_compile(name: &str) -> (String, Vec<String>) {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name);
     let source = std::fs::read_to_string(&path).unwrap();
     let conversion = markdown_to_typst(&source, &Options::for_file(&path));
     let typ_path = path.with_extension("typ");

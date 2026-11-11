@@ -95,15 +95,18 @@ fn parse_pairs(text: &str, separator: char) -> Vec<(String, Value)> {
         let trimmed = line.trim();
         if indented {
             // Listeneintrag zum zuletzt gelesenen Schlüssel.
-            if let Some(item) = trimmed.strip_prefix("- ").or(trimmed.strip_prefix('-').filter(|s| s.is_empty()))
-                && let Some((_, value)) = pairs.last_mut() {
-                    let item = unquote(item.trim());
-                    match value {
-                        Value::List(items) => items.push(item),
-                        Value::Scalar(s) if s.is_empty() => *value = Value::List(vec![item]),
-                        Value::Scalar(_) => {}
-                    }
+            if let Some(item) = trimmed
+                .strip_prefix("- ")
+                .or(trimmed.strip_prefix('-').filter(|s| s.is_empty()))
+                && let Some((_, value)) = pairs.last_mut()
+            {
+                let item = unquote(item.trim());
+                match value {
+                    Value::List(items) => items.push(item),
+                    Value::Scalar(s) if s.is_empty() => *value = Value::List(vec![item]),
+                    Value::Scalar(_) => {}
                 }
+            }
             continue;
         }
         let Some((key, value)) = trimmed.split_once(separator) else {

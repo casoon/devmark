@@ -30,8 +30,8 @@ use gpui_kit::component::{
     tree::{TreeEvent, TreeItem, TreeState, tree},
     v_flex,
 };
-use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 
 use crate::assist::WritingAssist;
 use crate::notes_ui::{NotesState, SidebarMode};
@@ -161,23 +161,59 @@ fn format_entries() -> Vec<(Format, AssetIcon, Box<dyn gpui_kit::Action>)> {
         (Format::Heading(3), AssetIcon::Heading3, Box::new(Heading3)),
         (Format::Bold, AssetIcon::Bold, Box::new(FormatBold)),
         (Format::Italic, AssetIcon::Italic, Box::new(FormatItalic)),
-        (Format::Strike, AssetIcon::Strikethrough, Box::new(FormatStrike)),
+        (
+            Format::Strike,
+            AssetIcon::Strikethrough,
+            Box::new(FormatStrike),
+        ),
         (Format::Code, AssetIcon::Code, Box::new(FormatCode)),
         (Format::Link, AssetIcon::Link, Box::new(InsertLink)),
         (Format::BulletList, AssetIcon::List, Box::new(BulletList)),
-        (Format::NumberedList, AssetIcon::ListOrdered, Box::new(NumberedList)),
+        (
+            Format::NumberedList,
+            AssetIcon::ListOrdered,
+            Box::new(NumberedList),
+        ),
         (Format::TaskList, AssetIcon::ListTodo, Box::new(TaskList)),
         (Format::Quote, AssetIcon::TextQuote, Box::new(QuoteBlock)),
         (Format::Image, AssetIcon::Image, Box::new(InsertImage)),
         (Format::Table, AssetIcon::Table, Box::new(InsertTable)),
-        (Format::CodeBlock, AssetIcon::SquareCode, Box::new(InsertCodeBlock)),
-        (Format::Footnote, AssetIcon::Footprints, Box::new(InsertFootnote)),
-        (Format::Callout, AssetIcon::MessageSquareWarning, Box::new(InsertCallout)),
+        (
+            Format::CodeBlock,
+            AssetIcon::SquareCode,
+            Box::new(InsertCodeBlock),
+        ),
+        (
+            Format::Footnote,
+            AssetIcon::Footprints,
+            Box::new(InsertFootnote),
+        ),
+        (
+            Format::Callout,
+            AssetIcon::MessageSquareWarning,
+            Box::new(InsertCallout),
+        ),
         (Format::MathInline, AssetIcon::Radical, Box::new(InsertMath)),
-        (Format::MathBlock, AssetIcon::Sigma, Box::new(InsertMathBlock)),
-        (Format::Rule, AssetIcon::SeparatorHorizontal, Box::new(InsertRule)),
-        (Format::PageBreak, AssetIcon::FileDown, Box::new(InsertPageBreak)),
-        (Format::Outline, AssetIcon::TableOfContents, Box::new(InsertOutline)),
+        (
+            Format::MathBlock,
+            AssetIcon::Sigma,
+            Box::new(InsertMathBlock),
+        ),
+        (
+            Format::Rule,
+            AssetIcon::SeparatorHorizontal,
+            Box::new(InsertRule),
+        ),
+        (
+            Format::PageBreak,
+            AssetIcon::FileDown,
+            Box::new(InsertPageBreak),
+        ),
+        (
+            Format::Outline,
+            AssetIcon::TableOfContents,
+            Box::new(InsertOutline),
+        ),
     ]
 }
 
@@ -237,13 +273,24 @@ impl DocStats {
             }
             let text = line[level..].trim().trim_end_matches(marker).trim();
             if !text.is_empty() {
-                headings.push(Heading { line: ix as u32, level, text: text.to_string() });
+                headings.push(Heading {
+                    line: ix as u32,
+                    level,
+                    text: text.to_string(),
+                });
             }
         }
         Self {
-            words: text.split_whitespace().filter(|w| w.chars().any(char::is_alphanumeric)).count(),
+            words: text
+                .split_whitespace()
+                .filter(|w| w.chars().any(char::is_alphanumeric))
+                .count(),
             headings,
-            tags: if with_tags { devmark_notes::extract_hashtags(text) } else { Vec::new() },
+            tags: if with_tags {
+                devmark_notes::extract_hashtags(text)
+            } else {
+                Vec::new()
+            },
         }
     }
 }
@@ -310,7 +357,9 @@ const PLACEHOLDER_SUFFIX: &str = "\u{0}placeholder";
 
 impl FileTree {
     fn listing(&mut self, dir: &Path) -> &[(PathBuf, String, bool)] {
-        self.listings.entry(dir.to_path_buf()).or_insert_with(|| list_dir(dir))
+        self.listings
+            .entry(dir.to_path_buf())
+            .or_insert_with(|| list_dir(dir))
     }
 
     fn items(&mut self, dir: &Path) -> Vec<TreeItem> {
@@ -323,13 +372,21 @@ impl FileTree {
                     return TreeItem::new(id, name);
                 }
                 let expanded = self.expanded.contains(&path);
-                let mut children = if expanded { self.items(&path) } else { Vec::new() };
+                let mut children = if expanded {
+                    self.items(&path)
+                } else {
+                    Vec::new()
+                };
                 if children.is_empty() {
                     // Ohne Kind wäre der Eintrag kein Ordner mehr.
                     let label = if expanded { "(leer)" } else { "…" };
-                    children.push(TreeItem::new(format!("{id}{PLACEHOLDER_SUFFIX}"), label).disabled(true));
+                    children.push(
+                        TreeItem::new(format!("{id}{PLACEHOLDER_SUFFIX}"), label).disabled(true),
+                    );
                 }
-                TreeItem::new(id, name).children(children).expanded(expanded)
+                TreeItem::new(id, name)
+                    .children(children)
+                    .expanded(expanded)
             })
             .collect()
     }
@@ -373,18 +430,19 @@ impl Workspace {
             let items = file_tree.items(root);
             tree_state.update(cx, |state, cx| state.set_items(items, cx));
         }
-        let tree_subscription = cx.subscribe(&tree_state, |this: &mut Self, _, event: &TreeEvent, cx| {
-            match event {
-                TreeEvent::Expanded(id) => {
-                    this.file_tree.expanded.insert(PathBuf::from(id.as_str()));
+        let tree_subscription =
+            cx.subscribe(&tree_state, |this: &mut Self, _, event: &TreeEvent, cx| {
+                match event {
+                    TreeEvent::Expanded(id) => {
+                        this.file_tree.expanded.insert(PathBuf::from(id.as_str()));
+                    }
+                    TreeEvent::Collapsed(id) => {
+                        this.file_tree.expanded.remove(&PathBuf::from(id.as_str()));
+                        return;
+                    }
                 }
-                TreeEvent::Collapsed(id) => {
-                    this.file_tree.expanded.remove(&PathBuf::from(id.as_str()));
-                    return;
-                }
-            }
-            this.rebuild_tree(cx);
-        });
+                this.rebuild_tree(cx);
+            });
 
         // Fokus auf dem Workspace, damit Menü-Aktionen auch ohne offene Datei ankommen.
         let focus_handle = cx.focus_handle();
@@ -393,7 +451,9 @@ impl Workspace {
             move |window, cx| focus_handle.focus(window, cx)
         });
         if let Some(file) = file {
-            cx.defer_in(window, move |this, window, cx| this.open_file(file, window, cx));
+            cx.defer_in(window, move |this, window, cx| {
+                this.open_file(file, window, cx)
+            });
         }
         let notes = NotesState::open(window, cx);
         // Ausstehende Notiz-Speicherungen nicht verlieren, wenn kurz nach dem Tippen beendet wird.
@@ -432,7 +492,11 @@ impl Workspace {
             sidebar: SidebarMode::Files,
             notes,
             window_handle: window.window_handle(),
-            _subscriptions: vec![tree_subscription, quit_subscription, activation_subscription],
+            _subscriptions: vec![
+                tree_subscription,
+                quit_subscription,
+                activation_subscription,
+            ],
         }
     }
 
@@ -477,7 +541,8 @@ impl Workspace {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            this.update_in(cx, |this, window, cx| this.set_root(path, window, cx)).ok();
+            this.update_in(cx, |this, window, cx| this.set_root(path, window, cx))
+                .ok();
         })
         .detach();
     }
@@ -502,7 +567,11 @@ impl Workspace {
 
     /// Datei liegt nicht im Workspace (Notizen zählen nicht).
     fn is_outside(&self, buffer: &Buffer) -> bool {
-        buffer.note_id.is_none() && !self.root.as_ref().is_some_and(|root| buffer.path.starts_with(root))
+        buffer.note_id.is_none()
+            && !self
+                .root
+                .as_ref()
+                .is_some_and(|root| buffer.path.starts_with(root))
     }
 
     /// Ordnerinhalte neu einlesen (aufgeklappte Ordner bleiben offen).
@@ -524,7 +593,11 @@ impl Workspace {
     fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         self.new_doc = None;
         let pane_ix = self.active_pane;
-        if let Some(ix) = self.panes[pane_ix].buffers.iter().position(|b| b.path == path) {
+        if let Some(ix) = self.panes[pane_ix]
+            .buffers
+            .iter()
+            .position(|b| b.path == path)
+        {
             self.panes[pane_ix].active = ix;
             self.schedule_preview(Duration::ZERO, cx);
             cx.notify();
@@ -601,7 +674,9 @@ impl Workspace {
                         };
                         let (id, workspace) = (id.to_string(), workspace.clone());
                         window.defer(cx, move |window, cx| {
-                            workspace.update(cx, |this, cx| this.open_note(id, window, cx)).ok();
+                            workspace
+                                .update(cx, |this, cx| this.open_note(id, window, cx))
+                                .ok();
                         });
                         true
                     }));
@@ -746,7 +821,11 @@ impl Workspace {
     /// Sichert alle geänderten Dateien; `false`, wenn eine nicht gespeichert werden konnte.
     fn save_all_files(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let mut ok = true;
-        for buffer in self.panes.iter_mut().flat_map(|pane| pane.buffers.iter_mut()) {
+        for buffer in self
+            .panes
+            .iter_mut()
+            .flat_map(|pane| pane.buffers.iter_mut())
+        {
             if !buffer.dirty || buffer.note_id.is_some() {
                 continue;
             }
@@ -759,7 +838,10 @@ impl Workspace {
                 Err(err) => {
                     ok = false;
                     window.push_notification(
-                        Notification::error(format!("„{}“ konnte nicht gespeichert werden: {err}", file_name(&buffer.path))),
+                        Notification::error(format!(
+                            "„{}“ konnte nicht gespeichert werden: {err}",
+                            file_name(&buffer.path)
+                        )),
                         cx,
                     );
                 }
@@ -775,7 +857,11 @@ impl Workspace {
             return;
         }
         // Notizen vor dem Schließen sichern (Autosave könnte noch ausstehen).
-        if let Some(note_id) = self.active_buffer().filter(|b| b.dirty).and_then(|b| b.note_id.clone()) {
+        if let Some(note_id) = self
+            .active_buffer()
+            .filter(|b| b.dirty)
+            .and_then(|b| b.note_id.clone())
+        {
             self.save_note(&note_id, window, cx);
         }
         let pane = &mut self.panes[self.active_pane];
@@ -848,7 +934,10 @@ impl Workspace {
                             .into_iter()
                             .map(|page| {
                                 let ratio = page.width as f32 / page.height.max(1) as f32;
-                                (Arc::new(Image::from_bytes(ImageFormat::Png, page.png)), ratio)
+                                (
+                                    Arc::new(Image::from_bytes(ImageFormat::Png, page.png)),
+                                    ratio,
+                                )
                             })
                             .collect();
                         let old = std::mem::replace(&mut this.preview.pages, pages);
@@ -891,7 +980,11 @@ impl Workspace {
         };
         if !action.available(syntax) {
             window.push_notification(
-                Notification::info(format!("„{}“ gibt es in {} nicht.", action.label(), syntax.name())),
+                Notification::info(format!(
+                    "„{}“ gibt es in {} nicht.",
+                    action.label(),
+                    syntax.name()
+                )),
                 cx,
             );
             return;
@@ -933,7 +1026,11 @@ impl Workspace {
             }
             return;
         }
-        let Some(placeholders) = buffer.assist.as_ref().and_then(|a| a.accepted_snippet(state.text(), cursor)) else {
+        let Some(placeholders) = buffer
+            .assist
+            .as_ref()
+            .and_then(|a| a.accepted_snippet(state.text(), cursor))
+        else {
             return;
         };
         let first = placeholders[0].clone();
@@ -951,12 +1048,20 @@ impl Workspace {
         let editor = buffer.editor.clone();
         let state = editor.read(cx);
         let focused = state.focus_handle(cx).is_focused(window);
-        let Some(stops) = buffer.tabstops.as_mut().filter(|s| focused && s.contains(state.cursor())) else {
+        let Some(stops) = buffer
+            .tabstops
+            .as_mut()
+            .filter(|s| focused && s.contains(state.cursor()))
+        else {
             buffer.tabstops = None;
             cx.propagate();
             return;
         };
-        let target = if forward { stops.next_range() } else { Some(stops.prev_range()) };
+        let target = if forward {
+            stops.next_range()
+        } else {
+            Some(stops.prev_range())
+        };
         let target = match target {
             Some(target) => target,
             None => {
@@ -971,11 +1076,21 @@ impl Workspace {
         editor.update(cx, |state, cx| state.set_selected_range(target, cx));
     }
 
-    fn next_placeholder(&mut self, _: &NextPlaceholder, window: &mut Window, cx: &mut Context<Self>) {
+    fn next_placeholder(
+        &mut self,
+        _: &NextPlaceholder,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.jump_placeholder(true, window, cx);
     }
 
-    fn prev_placeholder(&mut self, _: &PrevPlaceholder, window: &mut Window, cx: &mut Context<Self>) {
+    fn prev_placeholder(
+        &mut self,
+        _: &PrevPlaceholder,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.jump_placeholder(false, window, cx);
     }
 
@@ -992,7 +1107,12 @@ impl Workspace {
 
     fn new_document(&mut self, _: &NewDocument, window: &mut Window, cx: &mut Context<Self>) {
         if self.root.is_none() {
-            window.push_notification(Notification::info("Neue Dokumente landen im Workspace – bitte erst einen Ordner wählen."), cx);
+            window.push_notification(
+                Notification::info(
+                    "Neue Dokumente landen im Workspace – bitte erst einen Ordner wählen.",
+                ),
+                cx,
+            );
             self.open_workspace(&OpenWorkspace, window, cx);
             return;
         }
@@ -1060,9 +1180,14 @@ impl Workspace {
         if buffer.note_id.is_some() {
             // Notizen haben keinen Speicherort – Ziel erfragen.
             let name = format!("{}.typ", buffer.label());
-            self.ask_export_path(name, move |this, target, window, cx| {
-                this.write_typst_export(&source, &path, target, window, cx)
-            }, window, cx);
+            self.ask_export_path(
+                name,
+                move |this, target, window, cx| {
+                    this.write_typst_export(&source, &path, target, window, cx)
+                },
+                window,
+                cx,
+            );
             return;
         }
         let target = path.with_extension("typ");
@@ -1079,13 +1204,23 @@ impl Workspace {
         self.write_typst_export(&source, &path, target, window, cx);
     }
 
-    fn write_typst_export(&mut self, source: &str, path: &Path, target: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    fn write_typst_export(
+        &mut self,
+        source: &str,
+        path: &Path,
+        target: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let mut options = Options::for_file(path);
         options.output_dir = target.parent().map(Path::to_path_buf);
         let conversion = markdown_to_typst(source, &options);
         if let Err(err) = std::fs::write(&target, &conversion.typst) {
             window.push_notification(
-                Notification::error(format!("„{}“ konnte nicht geschrieben werden: {err}", file_name(&target))),
+                Notification::error(format!(
+                    "„{}“ konnte nicht geschrieben werden: {err}",
+                    file_name(&target)
+                )),
                 cx,
             );
             return;
@@ -1096,7 +1231,13 @@ impl Workspace {
             format!(
                 "Nach „{}“ umgewandelt. Hinweise:\n• {}",
                 file_name(&target),
-                conversion.warnings.iter().take(5).cloned().collect::<Vec<_>>().join("\n• ")
+                conversion
+                    .warnings
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n• ")
             )
         };
         window.push_notification(Notification::success(message), cx);
@@ -1123,23 +1264,36 @@ impl Workspace {
             let Ok(Ok(Some(target))) = receiver.await else {
                 return;
             };
-            this.update_in(cx, |this, window, cx| then(this, target, window, cx)).ok();
+            this.update_in(cx, |this, window, cx| then(this, target, window, cx))
+                .ok();
         })
         .detach();
     }
 
     /// Öffnet `path`; ist die Datei schon offen, wird ihr Inhalt ersetzt.
-    fn reload_or_open(&mut self, path: PathBuf, content: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn reload_or_open(
+        &mut self,
+        path: PathBuf,
+        content: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         for buffer in self.panes.iter().flat_map(|pane| pane.buffers.iter()) {
             if buffer.path == path {
-                buffer.editor.update(cx, |state, cx| state.set_value(content.clone(), window, cx));
+                buffer
+                    .editor
+                    .update(cx, |state, cx| state.set_value(content.clone(), window, cx));
             }
         }
         // Die Änderungsmeldung kommt verzögert; der Inhalt entspricht aber der Datei.
         cx.defer_in(window, {
             let path = path.clone();
             move |this, _window, cx| {
-                for buffer in this.panes.iter_mut().flat_map(|pane| pane.buffers.iter_mut()) {
+                for buffer in this
+                    .panes
+                    .iter_mut()
+                    .flat_map(|pane| pane.buffers.iter_mut())
+                {
                     if buffer.path == path {
                         buffer.dirty = false;
                     }
@@ -1166,9 +1320,14 @@ impl Workspace {
         if buffer.note_id.is_some() {
             let source = devmark_notes::strip_note_links(&source);
             let name = format!("{}.pdf", buffer.label());
-            self.ask_export_path(name, move |this, target, window, cx| {
-                this.start_pdf_export(source, syntax, path, target, window, cx)
-            }, window, cx);
+            self.ask_export_path(
+                name,
+                move |this, target, window, cx| {
+                    this.start_pdf_export(source, syntax, path, target, window, cx)
+                },
+                window,
+                cx,
+            );
             return;
         }
         let pdf_path = path.with_extension("pdf");
@@ -1184,7 +1343,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.push_notification(Notification::info(format!("„{}“ wird erstellt …", file_name(&pdf_path))), cx);
+        window.push_notification(
+            Notification::info(format!("„{}“ wird erstellt …", file_name(&pdf_path))),
+            cx,
+        );
 
         let task = cx.background_spawn({
             let pdf_path = pdf_path.clone();
@@ -1203,27 +1365,28 @@ impl Workspace {
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
-            this.update_in(cx, |this, window, cx| {
-                match result {
-                    Ok(pages) => {
-                        window.push_notification(
-                            Notification::success(format!(
-                                "„{}“ erstellt ({pages} {}).",
-                                file_name(&pdf_path),
-                                if pages == 1 { "Seite" } else { "Seiten" }
-                            )),
-                            cx,
-                        );
-                        cx.open_with_system(&pdf_path);
-                        this.refresh_tree(cx);
-                    }
-                    Err(err) => {
-                        let first: Vec<&str> = err.lines().take(6).collect();
-                        window.push_notification(
-                            Notification::error(format!("PDF-Export fehlgeschlagen:\n{}", first.join("\n"))),
-                            cx,
-                        );
-                    }
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(pages) => {
+                    window.push_notification(
+                        Notification::success(format!(
+                            "„{}“ erstellt ({pages} {}).",
+                            file_name(&pdf_path),
+                            if pages == 1 { "Seite" } else { "Seiten" }
+                        )),
+                        cx,
+                    );
+                    cx.open_with_system(&pdf_path);
+                    this.refresh_tree(cx);
+                }
+                Err(err) => {
+                    let first: Vec<&str> = err.lines().take(6).collect();
+                    window.push_notification(
+                        Notification::error(format!(
+                            "PDF-Export fehlgeschlagen:\n{}",
+                            first.join("\n")
+                        )),
+                        cx,
+                    );
                 }
             })
             .ok();
@@ -1254,7 +1417,11 @@ impl Workspace {
                 );
             if !recent.is_empty() {
                 body = body.child(
-                    div().pt_2().text_xs().text_color(cx.theme().muted_foreground).child("Zuletzt geöffnet"),
+                    div()
+                        .pt_2()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Zuletzt geöffnet"),
                 );
                 for (ix, path) in recent.into_iter().enumerate() {
                     body = body.child(
@@ -1263,11 +1430,16 @@ impl Workspace {
                             .px_2()
                             .py_1()
                             .child(
-                                v_flex()
-                                    .child(file_name(&path))
-                                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child(tilde(&path))),
+                                v_flex().child(file_name(&path)).child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(tilde(&path)),
+                                ),
                             )
-                            .on_click(cx.listener(move |this, _, window, cx| this.set_root(path.clone(), window, cx))),
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.set_root(path.clone(), window, cx)
+                            })),
                     );
                 }
             }
@@ -1287,14 +1459,26 @@ impl Workspace {
             .w_full()
             .justify_start()
             .icon(AssetIcon::ChevronsUpDown)
-            .label(root.as_deref().map(file_name).unwrap_or_else(|| "Kein Workspace".into()))
-            .tooltip(root.as_deref().map(tilde).unwrap_or_else(|| "Workspace wählen".into()))
+            .label(
+                root.as_deref()
+                    .map(file_name)
+                    .unwrap_or_else(|| "Kein Workspace".into()),
+            )
+            .tooltip(
+                root.as_deref()
+                    .map(tilde)
+                    .unwrap_or_else(|| "Workspace wählen".into()),
+            )
             .dropdown_menu(move |mut menu, _, _| {
                 for path in recent.iter().filter(|path| Some(*path) != root.as_ref()) {
                     let (workspace, path) = (workspace.clone(), path.clone());
-                    menu = menu.item(PopupMenuItem::new(tilde(&path)).on_click(move |_, window, cx| {
-                        workspace.update(cx, |this, cx| this.set_root(path.clone(), window, cx)).ok();
-                    }));
+                    menu = menu.item(PopupMenuItem::new(tilde(&path)).on_click(
+                        move |_, window, cx| {
+                            workspace
+                                .update(cx, |this, cx| this.set_root(path.clone(), window, cx))
+                                .ok();
+                        },
+                    ));
                 }
                 if !recent.is_empty() {
                     menu = menu.separator();
@@ -1305,34 +1489,37 @@ impl Workspace {
 
     fn render_file_tree(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
-        tree(&self.tree_state, move |ix, entry, _selected, _window, cx| {
-            view.update(cx, |_, cx| {
-                let item = entry.item();
-                let icon = if !entry.is_folder() {
-                    IconName::File
-                } else if entry.is_expanded() {
-                    IconName::FolderOpen
-                } else {
-                    IconName::Folder
-                };
+        tree(
+            &self.tree_state,
+            move |ix, entry, _selected, _window, cx| {
+                view.update(cx, |_, cx| {
+                    let item = entry.item();
+                    let icon = if !entry.is_folder() {
+                        IconName::File
+                    } else if entry.is_expanded() {
+                        IconName::FolderOpen
+                    } else {
+                        IconName::Folder
+                    };
 
-                ListItem::new(ix)
-                    .w_full()
-                    .rounded(cx.theme().radius)
-                    .py_0p5()
-                    .px_2()
-                    .pl(px(16.) * entry.depth() + px(8.))
-                    .child(h_flex().gap_2().child(icon).child(item.label.clone()))
-                    .on_click(cx.listener({
-                        let item = item.clone();
-                        move |this, _, window, cx| {
-                            if !item.is_folder() && !item.id.ends_with(PLACEHOLDER_SUFFIX) {
-                                this.open_file(PathBuf::from(item.id.as_str()), window, cx);
+                    ListItem::new(ix)
+                        .w_full()
+                        .rounded(cx.theme().radius)
+                        .py_0p5()
+                        .px_2()
+                        .pl(px(16.) * entry.depth() + px(8.))
+                        .child(h_flex().gap_2().child(icon).child(item.label.clone()))
+                        .on_click(cx.listener({
+                            let item = item.clone();
+                            move |this, _, window, cx| {
+                                if !item.is_folder() && !item.id.ends_with(PLACEHOLDER_SUFFIX) {
+                                    this.open_file(PathBuf::from(item.id.as_str()), window, cx);
+                                }
                             }
-                        }
-                    }))
-            })
-        })
+                        }))
+                })
+            },
+        )
         .text_sm()
         .px_2()
         .h_full()
@@ -1365,7 +1552,9 @@ impl Workspace {
                     .xsmall()
                     .icon(icon)
                     .tooltip_with_action(tooltip, ui_action.as_ref(), None)
-                    .on_click(cx.listener(move |this, _, window, cx| this.format(action, window, cx))),
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.format(action, window, cx)),
+                    ),
             );
         }
         bar = bar.child(div().flex_1());
@@ -1376,8 +1565,14 @@ impl Workspace {
                     .xsmall()
                     .icon(AssetIcon::FileType)
                     .label("Typst")
-                    .tooltip_with_action("Nach Typst umwandeln (.typ neben der Datei)", &ExportTypst, None)
-                    .on_click(cx.listener(|this, _, window, cx| this.export_typst(&ExportTypst, window, cx))),
+                    .tooltip_with_action(
+                        "Nach Typst umwandeln (.typ neben der Datei)",
+                        &ExportTypst,
+                        None,
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.export_typst(&ExportTypst, window, cx)
+                    })),
             );
         }
         if self.active_buffer().is_some_and(|b| b.note_id.is_some()) {
@@ -1390,7 +1585,9 @@ impl Workspace {
                     .label("Verlauf")
                     .selected(open)
                     .tooltip_with_action("Frühere Stände dieser Notiz", &ShowHistory, None)
-                    .on_click(cx.listener(|this, _, window, cx| this.show_history(&ShowHistory, window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.show_history(&ShowHistory, window, cx)
+                    })),
             );
         }
         bar.child(
@@ -1400,8 +1597,14 @@ impl Workspace {
                 .icon(AssetIcon::Eye)
                 .label("Vorschau")
                 .selected(self.show_preview)
-                .tooltip_with_action("Druckvorschau neben dem Text ein-/ausblenden", &TogglePreview, None)
-                .on_click(cx.listener(|this, _, window, cx| this.toggle_preview(&TogglePreview, window, cx))),
+                .tooltip_with_action(
+                    "Druckvorschau neben dem Text ein-/ausblenden",
+                    &TogglePreview,
+                    None,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.toggle_preview(&TogglePreview, window, cx)
+                })),
         )
         .child(
             Button::new("export-pdf")
@@ -1410,7 +1613,9 @@ impl Workspace {
                 .icon(AssetIcon::Printer)
                 .label("PDF")
                 .tooltip_with_action("Als PDF exportieren und öffnen", &ExportPdf, None)
-                .on_click(cx.listener(|this, _, window, cx| this.export_pdf(&ExportPdf, window, cx))),
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.export_pdf(&ExportPdf, window, cx)),
+                ),
         )
         .child(
             Button::new("help")
@@ -1419,7 +1624,9 @@ impl Workspace {
                 .icon(AssetIcon::CircleQuestionMark)
                 .selected(self.show_help)
                 .tooltip_with_action("Spickzettel ein-/ausblenden", &ToggleHelp, None)
-                .on_click(cx.listener(|this, _, window, cx| this.toggle_help(&ToggleHelp, window, cx))),
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.toggle_help(&ToggleHelp, window, cx)),
+                ),
         )
     }
 
@@ -1443,7 +1650,11 @@ impl Workspace {
                 Button::new(("doc-tag", ix))
                     .xsmall()
                     .ghost()
-                    .selected(filter.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(&tag)))
+                    .selected(
+                        filter
+                            .as_deref()
+                            .is_some_and(|t| t.eq_ignore_ascii_case(&tag)),
+                    )
                     .label(format!("#{tag}"))
                     .tooltip("Notizen mit diesem Tag zeigen")
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -1460,11 +1671,11 @@ impl Workspace {
             .text_xs()
             .text_color(cx.theme().muted_foreground)
             .child(tags)
-            .child(
-                div()
-                    .flex_none()
-                    .child(if saved.is_empty() { words } else { format!("{saved} · {words}") }),
-            )
+            .child(div().flex_none().child(if saved.is_empty() {
+                words
+            } else {
+                format!("{saved} · {words}")
+            }))
     }
 
     /// Gliederung am rechten Rand: ein Strich je Überschrift, Klick springt hin.
@@ -1493,7 +1704,11 @@ impl Workspace {
                 2 => 12.,
                 _ => 8.,
             };
-            let color = if current == Some(ix) { cx.theme().foreground } else { cx.theme().muted_foreground.opacity(0.5) };
+            let color = if current == Some(ix) {
+                cx.theme().foreground
+            } else {
+                cx.theme().muted_foreground.opacity(0.5)
+            };
             outline = outline.child(
                 div()
                     .id(("outline-heading", ix))
@@ -1541,16 +1756,26 @@ impl Workspace {
                     .child(
                         h_flex()
                             .justify_between()
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child(action.label()))
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(action.label()),
+                            )
                             .child(
                                 Button::new(("help-insert", ix))
                                     .xsmall()
                                     .outline()
                                     .label("Einfügen")
-                                    .on_click(cx.listener(move |this, _, window, cx| this.format(action, window, cx))),
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.format(action, window, cx)
+                                    })),
                             ),
                     )
-                    .child(div().text_color(cx.theme().muted_foreground).child(action.description()))
+                    .child(
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(action.description()),
+                    )
                     .child(
                         div()
                             .p_2()
@@ -1641,7 +1866,11 @@ impl Workspace {
                     .role(Role::RadioButton)
                     .aria_label(doc_type.label())
                     .aria_description(doc_type.description())
-                    .aria_toggled(if selected { Toggled::True } else { Toggled::False })
+                    .aria_toggled(if selected {
+                        Toggled::True
+                    } else {
+                        Toggled::False
+                    })
                     .aria_position_in_set(ix + 1)
                     .aria_size_of_set(DocType::ALL.len())
                     .rounded(cx.theme().radius)
@@ -1649,13 +1878,30 @@ impl Workspace {
                     .py_2()
                     .cursor_pointer()
                     .border_1()
-                    .border_color(if selected { cx.theme().primary } else { cx.theme().transparent })
-                    .bg(if selected { cx.theme().accent } else { cx.theme().transparent })
+                    .border_color(if selected {
+                        cx.theme().primary
+                    } else {
+                        cx.theme().transparent
+                    })
+                    .bg(if selected {
+                        cx.theme().accent
+                    } else {
+                        cx.theme().transparent
+                    })
                     .hover(|this| this.bg(cx.theme().accent))
                     .child(
                         v_flex()
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child(doc_type.label()))
-                            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(doc_type.description())),
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(doc_type.label()),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(doc_type.description()),
+                            ),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(form) = this.new_doc.as_mut() {
@@ -1684,17 +1930,32 @@ impl Workspace {
             .p_6()
             .gap_4()
             .max_w(px(640.))
-            .child(div().text_xl().font_weight(FontWeight::BOLD).child("Neues Dokument"))
+            .child(
+                div()
+                    .text_xl()
+                    .font_weight(FontWeight::BOLD)
+                    .child("Neues Dokument"),
+            )
             .child(
                 v_flex()
                     .gap_2()
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Dokumenttyp"))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Dokumenttyp"),
+                    )
                     .child(types),
             )
             .child(
                 v_flex()
                     .gap_2()
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Format"))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Format"),
+                    )
                     .child(
                         h_flex()
                             .gap_2()
@@ -1705,7 +1966,12 @@ impl Workspace {
             .child(
                 v_flex()
                     .gap_2()
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Angaben"))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Angaben"),
+                    )
                     .child(Input::new(&form.title))
                     .child(Input::new(&form.author)),
             )
@@ -1716,7 +1982,9 @@ impl Workspace {
                         Button::new("create-document")
                             .primary()
                             .label("Anlegen")
-                            .on_click(cx.listener(|this, _, window, cx| this.create_document(window, cx))),
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.create_document(window, cx)),
+                            ),
                     )
                     .child(
                         Button::new("cancel-document")
@@ -1734,7 +2002,11 @@ impl Workspace {
                     .text_color(cx.theme().muted_foreground)
                     .child(format!(
                         "Die Datei wird in „{}“ angelegt.",
-                        self.root.as_deref().map(Path::display).map(|d| d.to_string()).unwrap_or_default()
+                        self.root
+                            .as_deref()
+                            .map(Path::display)
+                            .map(|d| d.to_string())
+                            .unwrap_or_default()
                     )),
             )
     }
@@ -1744,15 +2016,21 @@ impl Workspace {
         let tabs = pane.buffers.iter().map(|buffer| {
             let name = buffer.label();
             // Notizen speichern automatisch – kein Punkt für „ungespeichert“.
-            let label = if buffer.dirty && buffer.note_id.is_none() { format!("● {name}") } else { name };
-            Tab::new().label(label).when(self.is_outside(buffer), |tab| {
-                tab.prefix(
-                    Icon::new(AssetIcon::FileSymlink)
-                        .xsmall()
-                        .ml_2()
-                        .text_color(cx.theme().muted_foreground),
-                )
-            })
+            let label = if buffer.dirty && buffer.note_id.is_none() {
+                format!("● {name}")
+            } else {
+                name
+            };
+            Tab::new()
+                .label(label)
+                .when(self.is_outside(buffer), |tab| {
+                    tab.prefix(
+                        Icon::new(AssetIcon::FileSymlink)
+                            .xsmall()
+                            .ml_2()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                })
         });
 
         let view = cx.entity();
@@ -1771,7 +2049,10 @@ impl Workspace {
             });
 
         let new_doc_here = pane_ix == self.active_pane && self.new_doc.is_some();
-        let body = match (self.new_doc.as_ref().filter(|_| new_doc_here), pane.buffers.get(pane.active)) {
+        let body = match (
+            self.new_doc.as_ref().filter(|_| new_doc_here),
+            pane.buffers.get(pane.active),
+        ) {
             (Some(form), _) => self.render_new_document(form, cx).into_any_element(),
             (None, Some(buffer)) => {
                 let editor = Editor::new(&buffer.editor).bordered(false).p_0().h_full();
@@ -1780,35 +2061,35 @@ impl Workspace {
                     Some(syntax) => v_flex()
                         .size_full()
                         // Notizen ohne Formatleiste: `/`, Tastenkürzel und Menüs reichen.
-                        .when(buffer.note_id.is_none(), |this| this.child(self.render_toolbar(syntax, cx)))
+                        .when(buffer.note_id.is_none(), |this| {
+                            this.child(self.render_toolbar(syntax, cx))
+                        })
                         .child(
                             h_flex()
                                 .flex_1()
                                 .min_h_0()
                                 .child(
-                                    v_flex()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .h_full()
-                                        .child(
-                                            v_flex()
-                                                .w_full()
-                                                .max_w(px(WRITING_COLUMN))
-                                                .mx_auto()
-                                                .h_full()
-                                                .px_6()
-                                                .child(self.render_doc_header(buffer, cx))
-                                                .child(
-                                                    div().flex_1().min_h_0().child(
-                                                        editor
-                                                            .font_family(writing_font(cx))
-                                                            .text_size(px(WRITING_FONT_SIZE)),
-                                                    ),
-                                                )
-                                                .children(buffer.note_id.as_deref().and_then(|id| {
-                                                    self.notes.as_ref().and_then(|state| self.render_backlinks(state, id, cx))
-                                                })),
-                                        ),
+                                    v_flex().flex_1().min_w_0().h_full().child(
+                                        v_flex()
+                                            .w_full()
+                                            .max_w(px(WRITING_COLUMN))
+                                            .mx_auto()
+                                            .h_full()
+                                            .px_6()
+                                            .child(self.render_doc_header(buffer, cx))
+                                            .child(
+                                                div().flex_1().min_h_0().child(
+                                                    editor
+                                                        .font_family(writing_font(cx))
+                                                        .text_size(px(WRITING_FONT_SIZE)),
+                                                ),
+                                            )
+                                            .children(buffer.note_id.as_deref().and_then(|id| {
+                                                self.notes.as_ref().and_then(|state| {
+                                                    self.render_backlinks(state, id, cx)
+                                                })
+                                            })),
+                                    ),
                                 )
                                 .children(self.render_outline(buffer, cx)),
                         )
@@ -1825,13 +2106,19 @@ impl Workspace {
                 .justify_center()
                 .gap_3()
                 .text_color(cx.theme().muted_foreground)
-                .child(if self.root.is_some() { "Datei im Baum auswählen" } else { "Kein Workspace geöffnet" })
+                .child(if self.root.is_some() {
+                    "Datei im Baum auswählen"
+                } else {
+                    "Kein Workspace geöffnet"
+                })
                 .child(
                     Button::new(("new-doc-empty", pane_ix))
                         .outline()
                         .icon(AssetIcon::FilePlus)
                         .label("Neues Dokument …")
-                        .on_click(cx.listener(|this, _, window, cx| this.new_document(&NewDocument, window, cx))),
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.new_document(&NewDocument, window, cx)
+                        })),
                 )
                 .into_any_element(),
         };
@@ -1871,19 +2158,31 @@ impl Render for Workspace {
             self.render_pane(0, cx).into_any_element()
         };
 
-        let active_syntax = self.active_buffer().and_then(|b| b.syntax).filter(|_| self.new_doc.is_none());
+        let active_syntax = self
+            .active_buffer()
+            .and_then(|b| b.syntax)
+            .filter(|_| self.new_doc.is_none());
         let history = self.render_history(cx);
         let main = match active_syntax {
             Some(syntax) if self.show_help || self.show_preview || history.is_some() => {
-                let mut group = h_resizable("writing-split").child(resizable_panel().child(editors));
+                let mut group =
+                    h_resizable("writing-split").child(resizable_panel().child(editors));
                 if let Some(history) = history {
                     group = group.child(resizable_panel().size(px(300.)).child(history));
                 }
                 if self.show_preview {
-                    group = group.child(resizable_panel().size(px(460.)).child(self.render_preview(cx)));
+                    group = group.child(
+                        resizable_panel()
+                            .size(px(460.))
+                            .child(self.render_preview(cx)),
+                    );
                 }
                 if self.show_help {
-                    group = group.child(resizable_panel().size(px(300.)).child(self.render_help(syntax, cx)));
+                    group = group.child(
+                        resizable_panel()
+                            .size(px(300.))
+                            .child(self.render_help(syntax, cx)),
+                    );
                 }
                 group.into_any_element()
             }
@@ -1895,8 +2194,16 @@ impl Render for Workspace {
             .map(|b| {
                 let path = match &b.note_id {
                     Some(_) => format!("Notiz – {}", b.label()),
-                    None if self.is_outside(b) => format!("Außerhalb des Workspace – {}", tilde(&b.path)),
-                    None => self.root.as_ref().and_then(|root| b.path.strip_prefix(root).ok()).unwrap_or(&b.path).display().to_string(),
+                    None if self.is_outside(b) => {
+                        format!("Außerhalb des Workspace – {}", tilde(&b.path))
+                    }
+                    None => self
+                        .root
+                        .as_ref()
+                        .and_then(|root| b.path.strip_prefix(root).ok())
+                        .unwrap_or(&b.path)
+                        .display()
+                        .to_string(),
                 };
                 match b.syntax {
                     Some(syntax) => format!("{path} · {}", syntax.name()),
@@ -1974,10 +2281,16 @@ impl Render for Workspace {
         if !self.focus_mode {
             columns = columns.child(resizable_panel().size(px(220.)).child(self.render_nav(cx)));
             if self.show_list {
-                columns = columns.child(resizable_panel().size(px(300.)).child(self.render_list(cx)));
+                columns =
+                    columns.child(resizable_panel().size(px(300.)).child(self.render_list(cx)));
             }
         }
-        root.child(div().flex_1().min_h_0().child(columns.child(resizable_panel().child(main))))
+        root.child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .child(columns.child(resizable_panel().child(main))),
+        )
         .child(
             StatusBar::new().left(status).right(
                 h_flex()
@@ -2007,7 +2320,11 @@ impl Render for Workspace {
 }
 
 fn language_for(path: &Path) -> String {
-    match path.extension().and_then(|e| e.to_str()).unwrap_or_default() {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+    {
         "rs" => "rust",
         "typ" => "typst",
         "md" | "markdown" | "mdx" => "markdown",
@@ -2047,7 +2364,12 @@ fn file_name(path: &Path) -> String {
 /// Von DevMark erzeugte .typ-Dateien dürfen beim erneuten Umwandeln überschrieben werden.
 fn generated_by_devmark(path: &Path) -> bool {
     std::fs::read_to_string(path)
-        .map(|content| content.lines().next().is_some_and(|line| line.contains("mit DevMark erzeugt")))
+        .map(|content| {
+            content
+                .lines()
+                .next()
+                .is_some_and(|line| line.contains("mit DevMark erzeugt"))
+        })
         .unwrap_or(false)
 }
 
@@ -2064,14 +2386,23 @@ fn now_ms() -> i64 {
 
 fn file_modified_ms(path: &Path) -> Option<i64> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    Some(modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64)
+    Some(
+        modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_millis() as i64,
+    )
 }
 
 /// Datum (UTC) als `14.10.2026`.
 fn date_from_ms(ms: i64) -> String {
     let iso = iso_date(ms);
     let mut parts = iso.split('-');
-    let (year, month, day) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+    let (year, month, day) = (
+        parts.next().unwrap_or(""),
+        parts.next().unwrap_or(""),
+        parts.next().unwrap_or(""),
+    );
     format!("{day}.{month}.{year}")
 }
 
@@ -2092,7 +2423,10 @@ fn iso_date(ms: i64) -> String {
 
 fn window_title(root: Option<&Path>) -> String {
     match root {
-        Some(root) => format!("DevMark – {}", root.file_name().unwrap_or_default().to_string_lossy()),
+        Some(root) => format!(
+            "DevMark – {}",
+            root.file_name().unwrap_or_default().to_string_lossy()
+        ),
         None => "DevMark".into(),
     }
 }
@@ -2126,7 +2460,10 @@ fn list_dir(dir: &Path) -> Vec<(PathBuf, String, bool)> {
             (!hidden).then_some((path, name, is_dir))
         })
         .collect();
-    items.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+    items.sort_by(|a, b| {
+        b.2.cmp(&a.2)
+            .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+    });
     items
 }
 
@@ -2177,7 +2514,10 @@ fn warm_theme(cx: &mut App) {
 fn main() {
     // Argument: Ordner (wird Workspace) oder Datei (wird geöffnet, Workspace = zuletzt genutzter).
     // Ohne Argument: zuletzt genutzter Workspace, sonst keiner – nie stillschweigend Home oder „/“.
-    let arg = std::env::args().nth(1).map(PathBuf::from).map(|arg| arg.canonicalize().unwrap_or(arg));
+    let arg = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .map(|arg| arg.canonicalize().unwrap_or(arg));
     let last = || recent_workspaces().into_iter().next();
     let (root, file) = match arg {
         Some(arg) if arg.is_dir() => (Some(arg), None),
@@ -2320,7 +2660,8 @@ fn main() {
                     window
                         .update(cx, |_, window, cx| {
                             window.activate_window();
-                            workspace.update(cx, |workspace, cx| workspace.open_path(path, window, cx));
+                            workspace
+                                .update(cx, |workspace, cx| workspace.open_path(path, window, cx));
                         })
                         .ok();
                 }
@@ -2337,12 +2678,15 @@ fn path_from_file_url(url: &str) -> Option<PathBuf> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len()
-            && let Ok(byte) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?, 16) {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(byte) =
+                u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?, 16)
+        {
+            out.push(byte);
+            i += 3;
+            continue;
+        }
         out.push(bytes[i]);
         i += 1;
     }
@@ -2365,11 +2709,16 @@ mod tests {
         use devmark_writing::authoring::Syntax;
         let markdown = "# Titel\n\nZwei Wörter - hier.\n\n```\n# kein Titel\n```\n## Unter #\n#tag ohne Leerzeichen";
         let stats = super::DocStats::of(Syntax::Markdown, markdown, true);
-        let outline: Vec<_> = stats.headings.iter().map(|h| (h.line, h.level, h.text.as_str())).collect();
+        let outline: Vec<_> = stats
+            .headings
+            .iter()
+            .map(|h| (h.line, h.level, h.text.as_str()))
+            .collect();
         assert_eq!(outline, [(0, 1, "Titel"), (7, 2, "Unter")]);
         assert_eq!(stats.words, 10);
         assert_eq!(stats.tags, ["tag"]);
-        let typst = super::DocStats::of(Syntax::Typst, "= Kapitel\n== Abschnitt\n#set page()", false);
+        let typst =
+            super::DocStats::of(Syntax::Typst, "= Kapitel\n== Abschnitt\n#set page()", false);
         assert_eq!(typst.headings.len(), 2);
         assert!(typst.tags.is_empty());
     }

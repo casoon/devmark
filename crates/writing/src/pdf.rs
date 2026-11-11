@@ -10,7 +10,6 @@ use std::sync::OnceLock;
 
 use typst::diag::{FileError, FileResult, PackageError, Severity, SourceDiagnostic};
 use typst::foundations::{Bytes, Datetime, Duration};
-use typst_layout::PagedDocument;
 use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
@@ -18,6 +17,7 @@ use typst::{Library, LibraryExt, World, WorldExt};
 use typst_kit::files::{FileLoader, FileStore, FsRoot};
 use typst_kit::fonts::{self, FontStore};
 use typst_kit::packages::FsPackages;
+use typst_layout::PagedDocument;
 
 /// Kompiliert `source` (Inhalt der Datei `main_path`) zu PDF-Bytes.
 ///
@@ -27,13 +27,18 @@ pub fn compile_pdf(source: &str, main_path: &Path) -> Result<Compiled, CompileEr
     let world = DevmarkWorld::new(source, main_path);
     let warned = typst::compile::<PagedDocument>(&world);
     let warnings = warned.warnings.iter().map(|d| world.describe(d)).collect();
-    let document = warned
-        .output
-        .map_err(|errors| CompileError::Typst(errors.iter().map(|d| world.describe(d)).collect()))?;
+    let document = warned.output.map_err(|errors| {
+        CompileError::Typst(errors.iter().map(|d| world.describe(d)).collect())
+    })?;
     let options = typst_pdf::PdfOptions::default();
-    let pdf = typst_pdf::pdf(&document, &options)
-        .map_err(|errors| CompileError::Typst(errors.iter().map(|d| world.describe(d)).collect()))?;
-    Ok(Compiled { pdf, pages: document.pages().len(), warnings })
+    let pdf = typst_pdf::pdf(&document, &options).map_err(|errors| {
+        CompileError::Typst(errors.iter().map(|d| world.describe(d)).collect())
+    })?;
+    Ok(Compiled {
+        pdf,
+        pages: document.pages().len(),
+        warnings,
+    })
 }
 
 /// Kompiliert `source` und rendert die Seiten als PNG (für die Vorschau in der App).
@@ -49,9 +54,9 @@ pub fn render_pages(
     let world = DevmarkWorld::new(source, main_path);
     let warned = typst::compile::<PagedDocument>(&world);
     let warnings = warned.warnings.iter().map(|d| world.describe(d)).collect();
-    let document = warned
-        .output
-        .map_err(|errors| CompileError::Typst(errors.iter().map(|d| world.describe(d)).collect()))?;
+    let document = warned.output.map_err(|errors| {
+        CompileError::Typst(errors.iter().map(|d| world.describe(d)).collect())
+    })?;
     let options = typst_render::RenderOptions {
         pixel_per_pt: typst::utils::Scalar::new(pixel_per_pt),
         render_bleed: false,
@@ -69,7 +74,11 @@ pub fn render_pages(
             }
         })
         .collect();
-    Ok(Rendered { pages, total_pages: document.pages().len(), warnings })
+    Ok(Rendered {
+        pages,
+        total_pages: document.pages().len(),
+        warnings,
+    })
 }
 
 pub struct Rendered {
@@ -132,8 +141,13 @@ impl DevmarkWorld {
     fn new(source: &str, main_path: &Path) -> Self {
         let main_path = std::path::absolute(main_path).unwrap_or_else(|_| main_path.to_path_buf());
         // Wurzel = Dateisystem-Wurzel, damit auch `../bilder/x.png` erreichbar bleibt.
-        let root = main_path.ancestors().last().unwrap_or(Path::new("/")).to_path_buf();
-        let vpath = VirtualPath::virtualize(&root, &main_path).ok()
+        let root = main_path
+            .ancestors()
+            .last()
+            .unwrap_or(Path::new("/"))
+            .to_path_buf();
+        let vpath = VirtualPath::virtualize(&root, &main_path)
+            .ok()
             .unwrap_or_else(|| VirtualPath::new("main.typ").expect("valid path"));
         let main = RootedPath::new(VirtualRoot::Project, vpath).intern();
         let loader = Loader {
@@ -145,7 +159,11 @@ impl DevmarkWorld {
                 .flatten()
                 .collect(),
         };
-        Self { main, main_file: main_path, files: FileStore::new(loader) }
+        Self {
+            main,
+            main_file: main_path,
+            files: FileStore::new(loader),
+        }
     }
 
     /// Fehlermeldung mit Zeilenangabe, sofern sie in der Hauptdatei liegt.
@@ -157,14 +175,18 @@ impl DevmarkWorld {
         let mut location = String::new();
         if let (Some(id), Some(range)) = (diagnostic.span.id(), self.range(diagnostic.span))
             && let Ok(source) = self.source(id)
-                && let Some(line) = source.lines().byte_to_line(range.start) {
-                    let file = if id == self.main {
-                        self.main_file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
-                    } else {
-                        format!("{:?}", id.vpath())
-                    };
-                    location = format!(" ({file}, Zeile {})", line + 1);
-                }
+            && let Some(line) = source.lines().byte_to_line(range.start)
+        {
+            let file = if id == self.main {
+                self.main_file
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            } else {
+                format!("{:?}", id.vpath())
+            };
+            location = format!(" ({file}, Zeile {})", line + 1);
+        }
         let mut message = format!("{kind}{location}: {}", diagnostic.message);
         for hint in &diagnostic.hints {
             message.push_str(&format!("\n  Hinweis: {}", hint.v));
@@ -266,14 +288,21 @@ mod tests {
 
     #[test]
     fn compiles_simple_document() {
-        let compiled = compile_pdf("= Hallo\n\nWelt $x^2$", Path::new("/tmp/devmark-test.typ")).unwrap();
+        let compiled =
+            compile_pdf("= Hallo\n\nWelt $x^2$", Path::new("/tmp/devmark-test.typ")).unwrap();
         assert!(compiled.pdf.starts_with(b"%PDF"));
         assert_eq!(compiled.pages, 1);
     }
 
     #[test]
     fn renders_pages_as_png() {
-        let rendered = render_pages("= Hallo\n#pagebreak()\nZwei", Path::new("/tmp/devmark-test.typ"), 1.0, 10).unwrap();
+        let rendered = render_pages(
+            "= Hallo\n#pagebreak()\nZwei",
+            Path::new("/tmp/devmark-test.typ"),
+            1.0,
+            10,
+        )
+        .unwrap();
         assert_eq!(rendered.pages.len(), 2);
         assert!(rendered.pages[0].png.starts_with(b"\x89PNG"));
         assert_eq!(rendered.pages[0].width, 595);
@@ -281,7 +310,9 @@ mod tests {
 
     #[test]
     fn reports_errors_with_line() {
-        let Err(CompileError::Typst(errors)) = compile_pdf("Hallo\n#unbekannt", Path::new("/tmp/devmark-test.typ")) else {
+        let Err(CompileError::Typst(errors)) =
+            compile_pdf("Hallo\n#unbekannt", Path::new("/tmp/devmark-test.typ"))
+        else {
             panic!("expected error");
         };
         assert!(errors[0].contains("Zeile 2"), "{errors:?}");

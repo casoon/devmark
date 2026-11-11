@@ -142,7 +142,8 @@ pub struct Notes {
     pub revision_interval_ms: i64,
 }
 
-const DOCUMENT_COLUMNS: &str = "id, folder_id, title, content, favorite, created_at, updated_at, deleted_at";
+const DOCUMENT_COLUMNS: &str =
+    "id, folder_id, title, content, favorite, created_at, updated_at, deleted_at";
 
 fn document_from_row(row: &Row) -> rusqlite::Result<Document> {
     Ok(Document {
@@ -182,10 +183,25 @@ fn follows(title: &str, stem: &str) -> bool {
 pub fn file_stem(title: &str) -> String {
     let cleaned: String = title
         .chars()
-        .map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() { '-' } else { c })
+        .map(|c| {
+            if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() {
+                '-'
+            } else {
+                c
+            }
+        })
         .collect();
     let cleaned = cleaned.trim().trim_matches('.').trim();
-    if cleaned.is_empty() { UNTITLED.into() } else { cleaned.chars().take(80).collect::<String>().trim().to_string() }
+    if cleaned.is_empty() {
+        UNTITLED.into()
+    } else {
+        cleaned
+            .chars()
+            .take(80)
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
 }
 
 fn mtime_ms(path: &Path) -> i64 {
@@ -220,7 +236,11 @@ fn walk(root: &Path, dir: &Path, files: &mut Vec<String>, dirs: &mut Vec<String>
         let Ok(rel) = path.strip_prefix(root) else {
             continue;
         };
-        let id = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+        let id = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
         if path.is_dir() {
             dirs.push(id);
             walk(root, &path, files, dirs);
@@ -238,7 +258,11 @@ impl Notes {
 
     pub fn with_store(root: &Path, store: Store) -> Result<Self> {
         std::fs::create_dir_all(root)?;
-        let mut notes = Self { root: root.to_path_buf(), store, revision_interval_ms: 10 * 60 * 1000 };
+        let mut notes = Self {
+            root: root.to_path_buf(),
+            store,
+            revision_interval_ms: 10 * 60 * 1000,
+        };
         notes.rescan()?;
         Ok(notes)
     }
@@ -253,13 +277,23 @@ impl Notes {
 
     /// Datei einer Notiz.
     pub fn path_of(&self, id: &str) -> PathBuf {
-        id.split('/').fold(self.root.clone(), |path, part| path.join(part))
+        id.split('/')
+            .fold(self.root.clone(), |path, part| path.join(part))
     }
 
     /// Freie ID für `stem` in `dir` („Name.md“, „Name 2.md“ …); `keep` gilt als frei.
     fn free_id(&self, dir: Option<&str>, stem: &str, keep: Option<&str>) -> String {
         (1..)
-            .map(|n| join(dir, &if n == 1 { format!("{stem}.md") } else { format!("{stem} {n}.md") }))
+            .map(|n| {
+                join(
+                    dir,
+                    &if n == 1 {
+                        format!("{stem}.md")
+                    } else {
+                        format!("{stem} {n}.md")
+                    },
+                )
+            })
             .find(|id| Some(id.as_str()) == keep || !self.path_of(id).exists())
             .expect("unendlich viele Namen")
     }
@@ -272,14 +306,27 @@ impl Notes {
         let (mut files, mut dirs) = (Vec::new(), Vec::new());
         walk(&self.root, &self.root, &mut files, &mut dirs);
         let mut trashed = Vec::new();
-        walk(&self.root, &self.root.join(TRASH_DIR), &mut trashed, &mut dirs);
+        walk(
+            &self.root,
+            &self.root.join(TRASH_DIR),
+            &mut trashed,
+            &mut dirs,
+        );
         let known: HashMap<String, i64> = {
-            let mut stmt = self.store.conn().prepare("SELECT id, updated_at FROM documents")?;
-            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+            let mut stmt = self
+                .store
+                .conn()
+                .prepare("SELECT id, updated_at FROM documents")?;
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?
         };
         let mut changed = false;
         let mut seen = HashSet::new();
-        for (id, trash) in files.into_iter().map(|id| (id, false)).chain(trashed.into_iter().map(|id| (id, true))) {
+        for (id, trash) in files
+            .into_iter()
+            .map(|id| (id, false))
+            .chain(trashed.into_iter().map(|id| (id, true)))
+        {
             let path = self.path_of(&id);
             let modified = mtime_ms(&path);
             if known.get(&id) != Some(&modified) {
@@ -299,7 +346,11 @@ impl Notes {
     /// Indexeintrag aus dem Dateistand (Favorit und Papierkorb-Zeit bleiben erhalten).
     fn index(&mut self, id: &str, content: &str, deleted_at: Option<i64>) -> Result<()> {
         let path = self.path_of(id);
-        let folder = if deleted_at.is_some() { None } else { parent_of(id) };
+        let folder = if deleted_at.is_some() {
+            None
+        } else {
+            parent_of(id)
+        };
         ensure_folder(self.store.conn(), folder.as_deref(), self.store.device_id())?;
         self.store.conn().execute(
             "INSERT INTO documents(id, folder_id, title, content, created_at, updated_at, deleted_at, device_id)
@@ -331,8 +382,14 @@ impl Notes {
     fn unindex(&mut self, id: &str) -> Result<()> {
         let tx = self.store.transaction()?;
         tx.execute("DELETE FROM revisions WHERE document_id = ?1", params![id])?;
-        tx.execute("DELETE FROM document_tags WHERE document_id = ?1", params![id])?;
-        tx.execute("DELETE FROM attachments WHERE document_id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM document_tags WHERE document_id = ?1",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM attachments WHERE document_id = ?1",
+            params![id],
+        )?;
         tx.execute("DELETE FROM documents WHERE id = ?1", params![id])?;
         tx.commit()?;
         Ok(())
@@ -365,14 +422,22 @@ impl Notes {
         Ok(self
             .store
             .conn()
-            .query_row(&format!("SELECT {DOCUMENT_COLUMNS} FROM documents WHERE id = ?1"), params![id], document_from_row)
+            .query_row(
+                &format!("SELECT {DOCUMENT_COLUMNS} FROM documents WHERE id = ?1"),
+                params![id],
+                document_from_row,
+            )
             .optional()?)
     }
 
     /// Notizen nach Filter; Favoriten zuerst, dann zuletzt geändert.
     pub fn list(&self, filter: &Filter) -> Result<Vec<Document>> {
         let mut sql = format!("SELECT {DOCUMENT_COLUMNS} FROM documents d WHERE ");
-        sql.push_str(if filter.trash { "deleted_at IS NOT NULL" } else { "deleted_at IS NULL" });
+        sql.push_str(if filter.trash {
+            "deleted_at IS NOT NULL"
+        } else {
+            "deleted_at IS NULL"
+        });
         let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
         match &filter.folder {
             Some(None) => sql.push_str(" AND folder_id IS NULL"),
@@ -393,9 +458,16 @@ impl Notes {
         if filter.favorites_only {
             sql.push_str(" AND favorite = 1");
         }
-        sql.push_str(if filter.trash { " ORDER BY deleted_at DESC" } else { " ORDER BY favorite DESC, updated_at DESC" });
+        sql.push_str(if filter.trash {
+            " ORDER BY deleted_at DESC"
+        } else {
+            " ORDER BY favorite DESC, updated_at DESC"
+        });
         let mut stmt = self.store.conn().prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())), document_from_row)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())),
+            document_from_row,
+        )?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -414,11 +486,17 @@ impl Notes {
             params![id],
             |r| r.get(0),
         )?;
-        if last_revision.is_none_or(|t| now_ms() - t >= self.revision_interval_ms) && !current.content.trim().is_empty() {
+        if last_revision.is_none_or(|t| now_ms() - t >= self.revision_interval_ms)
+            && !current.content.trim().is_empty()
+        {
             self.snapshot(&current)?;
         }
         self.write(id, content)?;
-        if follows(&current.title, &file_stem(&display_title("", &current.content))) || follows(&current.title, UNTITLED) {
+        if follows(
+            &current.title,
+            &file_stem(&display_title("", &current.content)),
+        ) || follows(&current.title, UNTITLED)
+        {
             return self.rename(id, &display_title("", content));
         }
         Ok(Vec::new())
@@ -453,30 +531,54 @@ impl Notes {
     /// Nach Verschieben auf der Platte: Index-IDs nachziehen und Links in allen aktiven
     /// Notizen anpassen (auch die relativen Links der verschobenen Notizen selbst).
     fn apply_moves(&mut self, moves: &[(String, String)]) -> Result<()> {
-        let map: HashMap<&str, &str> = moves.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        let map: HashMap<&str, &str> = moves
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
         {
             let device = self.store.device_id().to_string();
             let tx = self.store.transaction()?;
             // IDs ändern sich, Revisionen/Tags zeigen kurzzeitig ins Leere.
             tx.pragma_update(None, "defer_foreign_keys", "ON")?;
             for (old, new) in moves {
-                let folder = if new.starts_with(&format!("{TRASH_DIR}/")) { None } else { parent_of(new) };
+                let folder = if new.starts_with(&format!("{TRASH_DIR}/")) {
+                    None
+                } else {
+                    parent_of(new)
+                };
                 ensure_folder(&tx, folder.as_deref(), &device)?;
                 tx.execute(
                     "UPDATE documents SET id = ?1, title = ?2, folder_id = ?3 WHERE id = ?4",
                     params![new, stem(new), folder, old],
                 )?;
-                tx.execute("UPDATE revisions SET document_id = ?1 WHERE document_id = ?2", params![new, old])?;
-                tx.execute("UPDATE document_tags SET document_id = ?1 WHERE document_id = ?2", params![new, old])?;
-                tx.execute("UPDATE attachments SET document_id = ?1 WHERE document_id = ?2", params![new, old])?;
+                tx.execute(
+                    "UPDATE revisions SET document_id = ?1 WHERE document_id = ?2",
+                    params![new, old],
+                )?;
+                tx.execute(
+                    "UPDATE document_tags SET document_id = ?1 WHERE document_id = ?2",
+                    params![new, old],
+                )?;
+                tx.execute(
+                    "UPDATE attachments SET document_id = ?1 WHERE document_id = ?2",
+                    params![new, old],
+                )?;
             }
             tx.commit()?;
         }
-        let reverse: HashMap<&str, &str> = moves.iter().map(|(a, b)| (b.as_str(), a.as_str())).collect();
+        let reverse: HashMap<&str, &str> = moves
+            .iter()
+            .map(|(a, b)| (b.as_str(), a.as_str()))
+            .collect();
         for document in self.list(&Filter::default())? {
-            let old_source = reverse.get(document.id.as_str()).copied().unwrap_or(&document.id);
+            let old_source = reverse
+                .get(document.id.as_str())
+                .copied()
+                .unwrap_or(&document.id);
             let rewritten =
-                links::rewrite_links(&document.content, old_source, &document.id, |id| map.get(id).map(|s| s.to_string()));
+                links::rewrite_links(&document.content, old_source, &document.id, |id| {
+                    map.get(id).map(|s| s.to_string())
+                });
             if let Some(content) = rewritten {
                 self.write(&document.id, &content)?;
             }
@@ -484,13 +586,19 @@ impl Notes {
         // Mtime nach dem Verschieben übernehmen, sonst liest der nächste Abgleich neu ein.
         for (_, new) in moves {
             let modified = mtime_ms(&self.path_of(new));
-            self.store.conn().execute("UPDATE documents SET updated_at = ?1 WHERE id = ?2", params![modified, new])?;
+            self.store.conn().execute(
+                "UPDATE documents SET updated_at = ?1 WHERE id = ?2",
+                params![modified, new],
+            )?;
         }
         Ok(())
     }
 
     pub fn set_favorite(&mut self, id: &str, favorite: bool) -> Result<()> {
-        self.store.conn().execute("UPDATE documents SET favorite = ?1 WHERE id = ?2", params![favorite as i64, id])?;
+        self.store.conn().execute(
+            "UPDATE documents SET favorite = ?1 WHERE id = ?2",
+            params![favorite as i64, id],
+        )?;
         Ok(())
     }
 
@@ -516,8 +624,14 @@ impl Notes {
                 "UPDATE documents SET id = ?1, folder_id = NULL, deleted_at = ?2, updated_at = ?3 WHERE id = ?4",
                 params![new, now_ms(), mtime_ms(&target), id],
             )?;
-            tx.execute("UPDATE revisions SET document_id = ?1 WHERE document_id = ?2", params![new, id])?;
-            tx.execute("DELETE FROM document_tags WHERE document_id = ?1", params![id])?;
+            tx.execute(
+                "UPDATE revisions SET document_id = ?1 WHERE document_id = ?2",
+                params![new, id],
+            )?;
+            tx.execute(
+                "DELETE FROM document_tags WHERE document_id = ?1",
+                params![id],
+            )?;
             tx.commit()?;
         }
         Ok(moves)
@@ -534,7 +648,10 @@ impl Notes {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::rename(self.path_of(id), &target)?;
-        self.store.conn().execute("UPDATE documents SET deleted_at = NULL WHERE id = ?1", params![id])?;
+        self.store.conn().execute(
+            "UPDATE documents SET deleted_at = NULL WHERE id = ?1",
+            params![id],
+        )?;
         let moves = vec![(id.to_string(), new.clone())];
         self.apply_moves(&moves)?;
         let content = std::fs::read_to_string(&target)?;
@@ -546,11 +663,11 @@ impl Notes {
     pub fn purge_trash(&mut self, older_than_ms: i64) -> Result<usize> {
         let cutoff = now_ms() - older_than_ms;
         let ids: Vec<String> = {
-            let mut stmt = self
-                .store
-                .conn()
-                .prepare("SELECT id FROM documents WHERE deleted_at IS NOT NULL AND deleted_at <= ?1")?;
-            stmt.query_map(params![cutoff], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?
+            let mut stmt = self.store.conn().prepare(
+                "SELECT id FROM documents WHERE deleted_at IS NOT NULL AND deleted_at <= ?1",
+            )?;
+            stmt.query_map(params![cutoff], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?
         };
         for id in &ids {
             self.purge(id)?;
@@ -587,7 +704,13 @@ impl Notes {
             "SELECT id, document_id, title, content, created_at FROM revisions WHERE document_id = ?1 ORDER BY created_at DESC, rowid DESC",
         )?;
         let rows = stmt.query_map(params![id], |r| {
-            Ok(Revision { id: r.get(0)?, document_id: r.get(1)?, title: r.get(2)?, content: r.get(3)?, created_at: r.get(4)? })
+            Ok(Revision {
+                id: r.get(0)?,
+                document_id: r.get(1)?,
+                title: r.get(2)?,
+                content: r.get(3)?,
+                created_at: r.get(4)?,
+            })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
@@ -598,9 +721,11 @@ impl Notes {
         let revision: Option<(String, String)> = self
             .store
             .conn()
-            .query_row("SELECT document_id, content FROM revisions WHERE id = ?1", params![revision_id], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            .query_row(
+                "SELECT document_id, content FROM revisions WHERE id = ?1",
+                params![revision_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .optional()?;
         let Some((document_id, content)) = revision else {
             return Ok(false);
@@ -633,11 +758,24 @@ impl Notes {
     pub fn create_folder(&mut self, name: &str, parent: Option<&str>) -> Result<Folder> {
         let name = file_stem(name);
         let id = (1..)
-            .map(|n| join(parent, &if n == 1 { name.clone() } else { format!("{name} {n}") }))
+            .map(|n| {
+                join(
+                    parent,
+                    &if n == 1 {
+                        name.clone()
+                    } else {
+                        format!("{name} {n}")
+                    },
+                )
+            })
             .find(|id| !self.path_of(id).exists())
             .expect("unendlich viele Namen");
         std::fs::create_dir_all(self.path_of(&id))?;
-        Ok(Folder { parent_id: parent.map(str::to_string), name: id.rsplit('/').next().unwrap_or(&id).to_string(), id })
+        Ok(Folder {
+            parent_id: parent.map(str::to_string),
+            name: id.rsplit('/').next().unwrap_or(&id).to_string(),
+            id,
+        })
     }
 
     /// Ordner umbenennen; gibt die neue Ordner-ID und die verschobenen Notizen zurück.
@@ -645,7 +783,16 @@ impl Notes {
         let parent = parent_of(id);
         let name = file_stem(name);
         let new = (1..)
-            .map(|n| join(parent.as_deref(), &if n == 1 { name.clone() } else { format!("{name} {n}") }))
+            .map(|n| {
+                join(
+                    parent.as_deref(),
+                    &if n == 1 {
+                        name.clone()
+                    } else {
+                        format!("{name} {n}")
+                    },
+                )
+            })
             .find(|candidate| candidate == id || !self.path_of(candidate).exists())
             .expect("unendlich viele Namen");
         let moves = self.move_dir(id, &new)?;
@@ -661,7 +808,10 @@ impl Notes {
         let moves: Moves = self
             .list(&Filter::default())?
             .into_iter()
-            .filter_map(|d| d.id.strip_prefix(&prefix).map(|rest| (d.id.clone(), format!("{new}/{rest}"))))
+            .filter_map(|d| {
+                d.id.strip_prefix(&prefix)
+                    .map(|rest| (d.id.clone(), format!("{new}/{rest}")))
+            })
             .collect();
         self.apply_moves(&moves)?;
         Ok(moves)
@@ -680,7 +830,16 @@ impl Notes {
                 std::fs::remove_file(entry.path())?;
             } else if entry.path().is_dir() {
                 let new = (1..)
-                    .map(|n| join(parent.as_deref(), &if n == 1 { name.clone() } else { format!("{name} {n}") }))
+                    .map(|n| {
+                        join(
+                            parent.as_deref(),
+                            &if n == 1 {
+                                name.clone()
+                            } else {
+                                format!("{name} {n}")
+                            },
+                        )
+                    })
                     .find(|c| !self.path_of(c).exists())
                     .expect("unendlich viele Namen");
                 moves.extend(self.move_dir(&old, &new)?);
@@ -688,7 +847,16 @@ impl Notes {
                 moves.extend(self.move_to_folder(&old, parent.as_deref())?);
             } else {
                 let new = (1..)
-                    .map(|n| join(parent.as_deref(), &if n == 1 { name.clone() } else { format!("{n}-{name}") }))
+                    .map(|n| {
+                        join(
+                            parent.as_deref(),
+                            &if n == 1 {
+                                name.clone()
+                            } else {
+                                format!("{n}-{name}")
+                            },
+                        )
+                    })
                     .find(|c| !self.path_of(c).exists())
                     .expect("unendlich viele Namen");
                 std::fs::rename(entry.path(), self.path_of(&new))?;
@@ -704,7 +872,10 @@ impl Notes {
         let now = now_ms();
         let device = self.store.device_id().to_string();
         let tx = self.store.transaction()?;
-        tx.execute("DELETE FROM document_tags WHERE document_id = ?1", params![document_id])?;
+        tx.execute(
+            "DELETE FROM document_tags WHERE document_id = ?1",
+            params![document_id],
+        )?;
         for name in names {
             let id = tag_id(name);
             tx.execute(
@@ -750,7 +921,11 @@ impl Notes {
             .list(&Filter::default())?
             .into_iter()
             .filter(|d| d.id != id)
-            .filter(|d| note_links(&d.content).iter().any(|l| resolve(&d.id, &l.target).as_deref() == Some(id)))
+            .filter(|d| {
+                note_links(&d.content)
+                    .iter()
+                    .any(|l| resolve(&d.id, &l.target).as_deref() == Some(id))
+            })
             .collect())
     }
 
@@ -768,7 +943,11 @@ impl Notes {
              ORDER BY bm25(documents_fts, 5.0, 1.0) LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![fts_query, limit as i64], |r| {
-            Ok(SearchHit { id: r.get(0)?, title: r.get(1)?, snippet: r.get(2)? })
+            Ok(SearchHit {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                snippet: r.get(2)?,
+            })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
@@ -811,7 +990,11 @@ fn frontmatter_tags(content: &str) -> Vec<String> {
     for line in rest[..end].lines() {
         if let Some(value) = line.strip_prefix("tags:") {
             let value = value.trim().trim_start_matches('[').trim_end_matches(']');
-            tags.extend(value.split(',').map(|t| t.trim().trim_matches(['"', '\'', '#']).to_string()));
+            tags.extend(
+                value
+                    .split(',')
+                    .map(|t| t.trim().trim_matches(['"', '\'', '#']).to_string()),
+            );
             in_list = value.is_empty();
         } else if in_list && let Some(item) = line.trim_start().strip_prefix("- ") {
             tags.push(item.trim().trim_matches(['"', '\'', '#']).to_string());
@@ -845,15 +1028,19 @@ pub fn extract_hashtags(markdown: &str) -> Vec<String> {
             if c == '`' {
                 in_code = !in_code;
             } else if c == '#' && !in_code {
-                let boundary = i == 0 || chars[i - 1].is_whitespace() || matches!(chars[i - 1], '(' | ',');
+                let boundary =
+                    i == 0 || chars[i - 1].is_whitespace() || matches!(chars[i - 1], '(' | ',');
                 let start = i + 1;
                 let mut end = start;
-                while end < chars.len() && (chars[end].is_alphanumeric() || matches!(chars[end], '-' | '_' | '/')) {
+                while end < chars.len()
+                    && (chars[end].is_alphanumeric() || matches!(chars[end], '-' | '_' | '/'))
+                {
                     end += 1;
                 }
                 let tag: String = chars[start..end].iter().collect();
                 let tag = tag.trim_end_matches(['-', '_', '/']).to_string();
-                let is_hex_color = (tag.len() == 3 || tag.len() == 6) && tag.chars().all(|c| c.is_ascii_hexdigit());
+                let is_hex_color = (tag.len() == 3 || tag.len() == 6)
+                    && tag.chars().all(|c| c.is_ascii_hexdigit());
                 if boundary
                     && !tag.is_empty()
                     && tag.chars().next().is_some_and(char::is_alphabetic)
@@ -890,7 +1077,10 @@ pub(crate) mod tests {
     /// Vault in einem frischen Temp-Ordner, Index im Speicher.
     pub(crate) fn vault() -> (Notes, PathBuf) {
         let dir = std::env::temp_dir().join(format!("devmark-vault-{}", new_id()));
-        (Notes::with_store(&dir, Store::open_in_memory().unwrap()).unwrap(), dir)
+        (
+            Notes::with_store(&dir, Store::open_in_memory().unwrap()).unwrap(),
+            dir,
+        )
     }
 
     fn read(dir: &Path, id: &str) -> String {
@@ -903,17 +1093,27 @@ pub(crate) mod tests {
         let note = n.create_note("").unwrap();
         assert_eq!(note.id, "Neue Notiz.md");
         let moves = n.save_content(&note.id, "# Einkauf\nMilch").unwrap();
-        assert_eq!(moves, [("Neue Notiz.md".to_string(), "Einkauf.md".to_string())]);
+        assert_eq!(
+            moves,
+            [("Neue Notiz.md".to_string(), "Einkauf.md".to_string())]
+        );
         assert_eq!(read(&dir, "Einkauf.md"), "# Einkauf\nMilch");
         assert!(!dir.join("Neue Notiz.md").exists());
         // Gleicher Titel → Nummer; auch so nummerierte Dateien folgen der ersten Zeile.
         let second = n.create_note("# Einkauf").unwrap();
         assert_eq!(second.id, "Einkauf 2.md");
-        assert_eq!(n.save_content(&second.id, "# Brot").unwrap()[0].1, "Brot.md");
+        assert_eq!(
+            n.save_content(&second.id, "# Brot").unwrap()[0].1,
+            "Brot.md"
+        );
         // Von Hand anders benannte Datei behält ihren Namen.
         std::fs::write(dir.join("Eigener Name.md"), "# Erste Zeile").unwrap();
         n.rescan().unwrap();
-        assert!(n.save_content("Eigener Name.md", "# Andere Zeile").unwrap().is_empty());
+        assert!(
+            n.save_content("Eigener Name.md", "# Andere Zeile")
+                .unwrap()
+                .is_empty()
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -942,23 +1142,41 @@ pub(crate) mod tests {
         let (mut n, dir) = vault();
         let folder = n.create_folder("Arbeit", None).unwrap();
         let target = n.create("Ziel", "Inhalt", Some(&folder.id)).unwrap();
-        let source = n.create("Quelle", &format!("Siehe {}", link_markup("Ziel", "Quelle.md", &target.id)), None).unwrap();
+        let source = n
+            .create(
+                "Quelle",
+                &format!("Siehe {}", link_markup("Ziel", "Quelle.md", &target.id)),
+                None,
+            )
+            .unwrap();
         assert_eq!(read(&dir, &source.id), "Siehe [Ziel](Arbeit/Ziel.md)");
         assert_eq!(n.backlinks(&target.id).unwrap()[0].id, source.id);
 
         n.rename(&target.id, "Neues Ziel").unwrap();
-        assert_eq!(read(&dir, &source.id), "Siehe [Neues Ziel](Arbeit/Neues%20Ziel.md)");
+        assert_eq!(
+            read(&dir, &source.id),
+            "Siehe [Neues Ziel](Arbeit/Neues%20Ziel.md)"
+        );
         n.move_to_folder(&source.id, Some("Arbeit")).unwrap();
-        assert_eq!(read(&dir, "Arbeit/Quelle.md"), "Siehe [Neues Ziel](Neues%20Ziel.md)");
+        assert_eq!(
+            read(&dir, "Arbeit/Quelle.md"),
+            "Siehe [Neues Ziel](Neues%20Ziel.md)"
+        );
 
         let (new_folder, moves) = n.rename_folder("Arbeit", "Job").unwrap();
         assert_eq!(new_folder, "Job");
         assert_eq!(moves.len(), 2);
-        assert_eq!(read(&dir, "Job/Quelle.md"), "Siehe [Neues Ziel](Neues%20Ziel.md)");
+        assert_eq!(
+            read(&dir, "Job/Quelle.md"),
+            "Siehe [Neues Ziel](Neues%20Ziel.md)"
+        );
         assert_eq!(n.backlinks("Job/Neues Ziel.md").unwrap().len(), 1);
 
         n.delete_folder("Job").unwrap();
-        assert_eq!(read(&dir, "Quelle.md"), "Siehe [Neues Ziel](Neues%20Ziel.md)");
+        assert_eq!(
+            read(&dir, "Quelle.md"),
+            "Siehe [Neues Ziel](Neues%20Ziel.md)"
+        );
         assert!(n.folders().unwrap().is_empty());
         std::fs::remove_dir_all(dir).ok();
     }
@@ -973,13 +1191,27 @@ pub(crate) mod tests {
         assert_eq!(trashed, ".trash/Weg.md");
         assert!(dir.join(".trash/Weg.md").exists());
         assert!(n.list(&Filter::default()).unwrap().is_empty());
-        assert_eq!(n.list(&Filter { trash: true, ..Default::default() }).unwrap().len(), 1);
-        assert!(n.search("weg", 10).unwrap().is_empty(), "Papierkorb nicht in der Suche");
+        assert_eq!(
+            n.list(&Filter {
+                trash: true,
+                ..Default::default()
+            })
+            .unwrap()
+            .len(),
+            1
+        );
+        assert!(
+            n.search("weg", 10).unwrap().is_empty(),
+            "Papierkorb nicht in der Suche"
+        );
         // Abgleich behält Papierkorb-Zustand.
         assert!(!n.rescan().unwrap());
         let restored = n.restore(trashed).unwrap()[0].1.clone();
         assert_eq!(restored, "Weg.md");
-        assert!(n.get(&restored).unwrap().unwrap().favorite, "Favorit bleibt");
+        assert!(
+            n.get(&restored).unwrap().unwrap().favorite,
+            "Favorit bleibt"
+        );
         assert_eq!(n.tags_of(&restored).unwrap(), ["alt"]);
         let trashed = n.trash(&restored).unwrap()[0].1.clone();
         assert_eq!(n.purge_trash(0).unwrap(), 1);
@@ -1011,26 +1243,44 @@ pub(crate) mod tests {
     fn full_text_search_and_frontmatter_tags() {
         let (mut n, dir) = vault();
         n.create("Rezept", "Apfelkuchen mit Zimt", None).unwrap();
-        n.create("Größenvergleich", "---\ntags: [maße, \"#vergleich\"]\n---\nFluss und Straße", None).unwrap();
+        n.create(
+            "Größenvergleich",
+            "---\ntags: [maße, \"#vergleich\"]\n---\nFluss und Straße",
+            None,
+        )
+        .unwrap();
         let hits = n.search("apfel", 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].title, "Rezept");
-        assert!(hits[0].snippet.contains("«Apfelkuchen»"), "{}", hits[0].snippet);
+        assert!(
+            hits[0].snippet.contains("«Apfelkuchen»"),
+            "{}",
+            hits[0].snippet
+        );
         assert_eq!(n.search("Gro", 10).unwrap().len(), 1, "remove_diacritics");
         assert!(n.search("\"\"* OR ( NEAR", 10).is_ok());
-        assert_eq!(n.tags_of("Größenvergleich.md").unwrap(), ["maße", "vergleich"]);
+        assert_eq!(
+            n.tags_of("Größenvergleich.md").unwrap(),
+            ["maße", "vergleich"]
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn hashtags() {
         let text = "# Überschrift\nText #projekt und #Größe, nicht a#b oder `#code`\n#start (#klammer) #fff #2026 #projekt\n```\n#nein\n```";
-        assert_eq!(extract_hashtags(text), ["projekt", "Größe", "start", "klammer"]);
+        assert_eq!(
+            extract_hashtags(text),
+            ["projekt", "Größe", "start", "klammer"]
+        );
     }
 
     #[test]
     fn titles_and_stems() {
-        assert_eq!(display_title("", "---\ntags: [a]\n---\n\n# Titel\nText"), "Titel");
+        assert_eq!(
+            display_title("", "---\ntags: [a]\n---\n\n# Titel\nText"),
+            "Titel"
+        );
         assert_eq!(display_title("", ""), "Neue Notiz");
         assert_eq!(file_stem("a/b: c?"), "a-b- c-");
         assert_eq!(file_stem("..."), "Neue Notiz");

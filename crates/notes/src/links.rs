@@ -49,7 +49,8 @@ fn line_links(line: &str, offset: usize) -> Vec<NoteLink> {
                     if is_note_target(&link.target) {
                         links.push(NoteLink {
                             range: link.range.start + offset..link.range.end + offset,
-                            dest_range: link.dest_range.start + offset..link.dest_range.end + offset,
+                            dest_range: link.dest_range.start + offset
+                                ..link.dest_range.end + offset,
                             ..link
                         });
                     }
@@ -119,9 +120,18 @@ pub fn resolve(source: &str, target: &str) -> Option<String> {
 
 /// Relativer, kodierter Linkpfad von Notiz `from` zu Notiz `to`.
 pub fn relative(from: &str, to: &str) -> String {
-    let from_dir: Vec<&str> = from.split('/').collect::<Vec<_>>().split_last().map(|(_, d)| d.to_vec()).unwrap_or_default();
+    let from_dir: Vec<&str> = from
+        .split('/')
+        .collect::<Vec<_>>()
+        .split_last()
+        .map(|(_, d)| d.to_vec())
+        .unwrap_or_default();
     let to_parts: Vec<&str> = to.split('/').collect();
-    let common = from_dir.iter().zip(&to_parts).take_while(|(a, b)| a == b).count();
+    let common = from_dir
+        .iter()
+        .zip(&to_parts)
+        .take_while(|(a, b)| a == b)
+        .count();
     let mut parts: Vec<String> = vec!["..".into(); from_dir.len() - common];
     parts.extend(to_parts[common..].iter().map(|p| percent_encode(p)));
     parts.join("/")
@@ -167,7 +177,11 @@ pub fn rewrite_links(
             continue;
         }
         let new_target = new_target.unwrap_or_else(|| old_target.clone());
-        let text = if link.text == stem(&old_target) { stem(&new_target).to_string() } else { link.text.clone() };
+        let text = if link.text == stem(&old_target) {
+            stem(&new_target).to_string()
+        } else {
+            link.text.clone()
+        };
         out.push_str(&content[last..link.range.start]);
         out.push('[');
         out.push_str(&text);
@@ -213,7 +227,9 @@ fn percent_decode(s: &str) -> String {
     while i < bytes.len() {
         if bytes[i] == b'%'
             && i + 2 < bytes.len()
-            && let Some(byte) = std::str::from_utf8(&bytes[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok())
+            && let Some(byte) = std::str::from_utf8(&bytes[i + 1..i + 3])
+                .ok()
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
         {
             out.push(byte);
             i += 3;
@@ -245,7 +261,10 @@ mod tests {
 
     #[test]
     fn resolves_and_relativizes() {
-        assert_eq!(resolve("a/b/x.md", "../c/y.md").as_deref(), Some("a/c/y.md"));
+        assert_eq!(
+            resolve("a/b/x.md", "../c/y.md").as_deref(),
+            Some("a/c/y.md")
+        );
         assert_eq!(resolve("x.md", "../y.md"), None);
         assert_eq!(relative("a/b/x.md", "a/c/y z.md"), "../c/y%20z.md");
         assert_eq!(relative("x.md", "a/y.md"), "a/y.md");
@@ -266,11 +285,17 @@ mod tests {
             rewrite_links("[C](sub/C.md)", "x.md", "sub/x.md", |_| None).unwrap(),
             "[C](C.md)"
         );
-        assert_eq!(rewrite_links("[C](sub/C.md)", "x.md", "x.md", |_| None), None);
+        assert_eq!(
+            rewrite_links("[C](sub/C.md)", "x.md", "x.md", |_| None),
+            None
+        );
     }
 
     #[test]
     fn strip() {
-        assert_eq!(strip_note_links("vor [A](A.md) nach [W](https://w)"), "vor A nach [W](https://w)");
+        assert_eq!(
+            strip_note_links("vor [A](A.md) nach [W](https://w)"),
+            "vor A nach [W](https://w)"
+        );
     }
 }

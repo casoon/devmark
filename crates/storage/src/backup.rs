@@ -46,7 +46,10 @@ pub fn list_backups(dir: &Path) -> std::io::Result<Vec<BackupInfo>> {
     };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        let Some(stamp) = name.strip_prefix(PREFIX).and_then(|s| s.strip_suffix(SUFFIX)) else {
+        let Some(stamp) = name
+            .strip_prefix(PREFIX)
+            .and_then(|s| s.strip_suffix(SUFFIX))
+        else {
             continue;
         };
         backups.push(BackupInfo {
@@ -68,10 +71,11 @@ pub fn prune_backups(dir: &Path, keep: usize) -> std::io::Result<usize> {
 fn prune(dir: &Path, keep: usize, newest: Option<&Path>) -> std::io::Result<usize> {
     let mut backups = list_backups(dir)?;
     if let Some(newest) = newest
-        && let Some(ix) = backups.iter().position(|b| b.path == newest) {
-            let current = backups.remove(ix);
-            backups.insert(0, current);
-        }
+        && let Some(ix) = backups.iter().position(|b| b.path == newest)
+    {
+        let current = backups.remove(ix);
+        backups.insert(0, current);
+    }
     let mut removed = 0;
     for backup in backups.iter().skip(keep.max(1)) {
         std::fs::remove_file(&backup.path)?;
@@ -81,7 +85,10 @@ fn prune(dir: &Path, keep: usize, newest: Option<&Path>) -> std::io::Result<usiz
 }
 
 fn utc_stamp(time: SystemTime) -> String {
-    let secs = time.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
+    let secs = time
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as i64;
     let (year, month, day) = civil_from_days(secs.div_euclid(86_400));
     let rest = secs.rem_euclid(86_400);
     format!(
@@ -112,7 +119,10 @@ mod tests {
     #[test]
     fn stamps() {
         assert_eq!(utc_stamp(UNIX_EPOCH), "19700101-000000");
-        assert_eq!(utc_stamp(UNIX_EPOCH + Duration::from_secs(1_792_000_000)), "20261014-174640");
+        assert_eq!(
+            utc_stamp(UNIX_EPOCH + Duration::from_secs(1_792_000_000)),
+            "20261014-174640"
+        );
     }
 
     #[test]
@@ -131,7 +141,9 @@ mod tests {
         // Backup ist eine vollständige, lesbare Datenbank.
         let copy = rusqlite::Connection::open(&backups[0].path).unwrap();
         let value: String = copy
-            .query_row("SELECT value FROM meta WHERE key = 'probe'", [], |r| r.get(0))
+            .query_row("SELECT value FROM meta WHERE key = 'probe'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(value, "x");
         std::fs::remove_dir_all(dir).ok();
