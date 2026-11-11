@@ -14,6 +14,7 @@ use pulldown_cmark::{
     Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, LinkType, Parser, Tag, TagEnd,
 };
 
+use crate::Warning;
 use crate::frontmatter::Metadata;
 use crate::math;
 
@@ -70,19 +71,25 @@ impl Options {
 pub struct Conversion {
     pub typst: String,
     pub metadata: Metadata,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Warning>,
 }
 
 pub fn markdown_to_typst(source: &str, options: &Options) -> Conversion {
     let source = source.strip_prefix('\u{feff}').unwrap_or(source);
     let (metadata, body) = split_frontmatter(source);
+    let frontmatter_lines = source[..source.len() - body.len()].matches('\n').count();
     let mut warnings = Vec::new();
-    let body = if options.mdx {
+    let (body, mdx_origins) = if options.mdx {
         preprocess_mdx(body, &mut warnings)
     } else {
-        body.to_string()
+        (body.to_string(), (0..=body.matches('\n').count()).collect())
     };
-    let body = preprocess_directives(&body);
+    let (body, directive_origins) = preprocess_directives(&body);
+    // Zeile im vorverarbeiteten Text → Zeile (ab 1) in der Quelldatei.
+    let line_origins = directive_origins
+        .iter()
+        .map(|&line| frontmatter_lines + mdx_origins.get(line).copied().unwrap_or(line) + 1)
+        .collect();
 
     let lang = metadata
         .lang
@@ -93,6 +100,7 @@ pub fn markdown_to_typst(source: &str, options: &Options) -> Conversion {
 
     let mut renderer = Renderer::new(options);
     renderer.warnings = warnings;
+    renderer.line_origins = line_origins;
     renderer.render_markdown(&body);
     let body = renderer.finish_body();
 
@@ -142,8 +150,20 @@ fn split_frontmatter(source: &str) -> (Metadata, &str) {
     (Metadata::default(), source)
 }
 
-fn preprocess_mdx(body: &str, warnings: &mut Vec<String>) -> String {
+/// Hängt `text` an `out` an und merkt für jede darin beginnende Zeile die Ursprungszeile
+/// `origin` – so lassen sich Hinweise nach der Vorverarbeitung der Quellzeile zuordnen.
+fn push_tracked(out: &mut String, origins: &mut Vec<usize>, text: &str, origin: usize) {
+    for (ix, part) in text.split_inclusive('\n').enumerate() {
+        if (ix > 0 || out.is_empty() || out.ends_with('\n')) && !part.is_empty() {
+            origins.push(origin);
+        }
+        out.push_str(part);
+    }
+}
+
+fn preprocess_mdx(body: &str, warnings: &mut Vec<Warning>) -> (String, Vec<usize>) {
     let mut out = String::with_capacity(body.len());
+    let mut origins = Vec::new();
     let mut fence: Option<String> = None;
     let mut math_block = false;
     let mut skipping_statement = 0i32; // Klammertiefe eines mehrzeiligen import/export
@@ -153,7 +173,7 @@ fn preprocess_mdx(body: &str, warnings: &mut Vec<String>) -> String {
     let mut removed_statements = 0;
     let mut removed_expressions = 0;
 
-    for line in body.split_inclusive('\n') {
+    for (line_no, line) in body.split_inclusive('\n').enumerate() {
         let trimmed = line.trim_start();
         if let Some(open) = &fence {
             if trimmed.starts_with(open.as_str())
@@ -161,7 +181,7 @@ fn preprocess_mdx(body: &str, warnings: &mut Vec<String>) -> String {
             {
                 fence = None;
             }
-            out.push_str(line);
+            push_tracked(&mut out, &mut origins, line, line_no);
             continue;
         }
         if skipping_statement > 0 {
@@ -175,7 +195,7 @@ fn preprocess_mdx(body: &str, warnings: &mut Vec<String>) -> String {
                     .take_while(|&c| c == '`' || c == '~')
                     .collect();
                 fence = Some(marker);
-                out.push_str(line);
+                push_tracked(&mut out, &mut origins, line, line_no);
                 continue;
             }
             if trimmed.starts_with("$$") {
@@ -185,11 +205,11 @@ fn preprocess_mdx(body: &str, warnings: &mut Vec<String>) -> String {
                 if !single_line {
                     math_block = !math_block;
                 }
-                out.push_str(line);
+                push_tracked(&mut out, &mut origins, line, line_no);
                 continue;
             }
             if math_block {
-                out.push_str(line);
+                push_tracked(&mut out, &mut origins, line, line_no);
                 continue;
             }
             if !line.starts_with([' ', '\t'])
@@ -326,29 +346,30 @@ fn preprocess_mdx(body: &str, warnings: &mut Vec<String>) -> String {
         if cleaned.trim().is_empty() && !line.trim().is_empty() {
             continue;
         }
-        out.push_str(&cleaned);
+        push_tracked(&mut out, &mut origins, &cleaned, line_no);
     }
 
     if removed_statements > 0 {
-        warnings.push(format!(
+        warnings.push(Warning::new(format!(
             "MDX: {removed_statements} import/export-Anweisung(en) entfernt."
-        ));
+        )));
     }
     if removed_expressions > 0 {
-        warnings.push(format!(
+        warnings.push(Warning::new(format!(
             "MDX: {removed_expressions} JavaScript-Ausdruck/Ausdrücke {{…}} entfernt."
-        ));
+        )));
     }
-    out
+    (out, origins)
 }
 
 /// Container-Direktiven (Docusaurus, VitePress, Starlight): `:::tip Titel` … `:::`
 /// → `<Callout>`, das der Renderer als Hinweisbox setzt.
-fn preprocess_directives(body: &str) -> String {
+fn preprocess_directives(body: &str) -> (String, Vec<usize>) {
     let mut out = String::with_capacity(body.len());
+    let mut origins = Vec::new();
     let mut fence: Option<String> = None;
     let mut open = 0usize;
-    for line in body.split_inclusive('\n') {
+    for (line_no, line) in body.split_inclusive('\n').enumerate() {
         let trimmed = line.trim();
         if let Some(marker) = &fence {
             if trimmed.starts_with(marker.as_str())
@@ -356,7 +377,7 @@ fn preprocess_directives(body: &str) -> String {
             {
                 fence = None;
             }
-            out.push_str(line);
+            push_tracked(&mut out, &mut origins, line, line_no);
             continue;
         }
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
@@ -366,7 +387,7 @@ fn preprocess_directives(body: &str) -> String {
                     .take_while(|&c| c == '`' || c == '~')
                     .collect(),
             );
-            out.push_str(line);
+            push_tracked(&mut out, &mut origins, line, line_no);
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix(":::") {
@@ -374,7 +395,7 @@ fn preprocess_directives(body: &str) -> String {
             if rest.is_empty() {
                 if open > 0 {
                     open -= 1;
-                    out.push_str("\n</Callout>\n\n");
+                    push_tracked(&mut out, &mut origins, "\n</Callout>\n\n", line_no);
                     continue;
                 }
             } else {
@@ -398,17 +419,23 @@ fn preprocess_directives(body: &str) -> String {
                     } else {
                         format!(" title=\"{title}\"")
                     };
-                    out.push_str(&format!("\n<Callout type=\"{kind}\"{title}>\n\n"));
+                    push_tracked(
+                        &mut out,
+                        &mut origins,
+                        &format!("\n<Callout type=\"{kind}\"{title}>\n\n"),
+                        line_no,
+                    );
                     continue;
                 }
             }
         }
-        out.push_str(line);
+        push_tracked(&mut out, &mut origins, line, line_no);
     }
+    let last = origins.last().copied().unwrap_or(0);
     for _ in 0..open {
-        out.push_str("\n</Callout>\n");
+        push_tracked(&mut out, &mut origins, "\n</Callout>\n", last);
     }
-    out
+    (out, origins)
 }
 
 fn bracket_balance(line: &str) -> i32 {
@@ -504,7 +531,11 @@ struct OpenHtml {
 struct Renderer<'a> {
     options: &'a Options,
     frames: Vec<(Frame, String)>,
-    warnings: Vec<String>,
+    warnings: Vec<Warning>,
+    /// Zeile im vorverarbeiteten Text → Quellzeile (ab 1).
+    line_origins: Vec<usize>,
+    /// Quellzeile des gerade verarbeiteten Blocks; `None` nach dem Durchlauf.
+    line: Option<usize>,
     warned: HashSet<String>,
     footnotes: HashMap<String, String>,
     slugs: HashMap<String, usize>,
@@ -533,6 +564,8 @@ impl<'a> Renderer<'a> {
             options,
             frames: vec![(Frame::Root, String::new())],
             warnings: Vec::new(),
+            line_origins: Vec::new(),
+            line: None,
             warned: HashSet::new(),
             footnotes: HashMap::new(),
             slugs: HashMap::new(),
@@ -550,9 +583,16 @@ impl<'a> Renderer<'a> {
         }
     }
 
+    fn warn(&mut self, message: String) {
+        self.warnings.push(Warning {
+            line: self.line,
+            message,
+        });
+    }
+
     fn warn_once(&mut self, key: &str, message: String) {
         if self.warned.insert(key.to_string()) {
-            self.warnings.push(message);
+            self.warn(message);
         }
     }
 
@@ -625,13 +665,32 @@ impl<'a> Renderer<'a> {
     }
 
     fn render_markdown(&mut self, markdown: &str) {
-        let events: Vec<Event> = Parser::new_ext(markdown, parser_options()).collect();
-        self.render_events(&events);
+        let (events, offsets): (Vec<Event>, Vec<usize>) =
+            Parser::new_ext(markdown, parser_options())
+                .into_offset_iter()
+                .map(|(event, range)| (event, range.start))
+                .unzip();
+        let line_starts: Vec<usize> = std::iter::once(0)
+            .chain(markdown.match_indices('\n').map(|(ix, _)| ix + 1))
+            .collect();
+        let lines: Vec<usize> = offsets
+            .iter()
+            .map(|&offset| {
+                let line = line_starts.partition_point(|&start| start <= offset) - 1;
+                self.line_origins.get(line).copied().unwrap_or(line + 1)
+            })
+            .collect();
+        self.render_events(&events, Some(&lines));
+        self.line = None;
     }
 
-    fn render_events(&mut self, events: &[Event]) {
+    /// `lines`: Quellzeile je Ereignis (nur auf oberster Ebene bekannt).
+    fn render_events(&mut self, events: &[Event], lines: Option<&[usize]>) {
         let mut i = 0;
         while i < events.len() {
+            if let Some(lines) = lines {
+                self.line = Some(lines[i]);
+            }
             if let Some(skip) = self.try_figure(&events[i..]) {
                 i += skip;
                 continue;
@@ -1036,7 +1095,7 @@ impl<'a> Renderer<'a> {
             }
             Ok(_) => {}
             Err(err) => {
-                self.warnings.push(format!(
+                self.warn(format!(
                     "Formel nicht umwandelbar, als LaTeX-Code übernommen: {} ({})",
                     latex.trim(),
                     err.lines().next().unwrap_or_default()
@@ -1203,9 +1262,9 @@ impl<'a> Renderer<'a> {
             == 1
             && !self.at_line_start();
         if inline {
-            self.render_events(&events[1..events.len() - 1]);
+            self.render_events(&events[1..events.len() - 1], None);
         } else {
-            self.render_events(&events);
+            self.render_events(&events, None);
         }
     }
 
@@ -1430,7 +1489,7 @@ impl<'a> Renderer<'a> {
             .cloned()
             .collect();
         for label in missing {
-            self.warnings.push(format!(
+            self.warn(format!(
                 "Interner Link auf unbekannten Abschnitt „#{label}“ – als Text übernommen."
             ));
             body = body.replace(&format!("#link(<{label}>)["), "#[");
@@ -1455,16 +1514,14 @@ impl<'a> Renderer<'a> {
                 used.insert(label.clone());
                 format!("#footnote[{text}]<{typst_label}>")
             } else {
-                self.warnings
-                    .push(format!("Fußnote „{label}“ ohne Definition."));
+                self.warn(format!("Fußnote „{label}“ ohne Definition."));
                 format!("\\[^{}\\]", escape_markup(&label, false, false))
             };
             body.replace_range(start..end, &replacement);
         }
         let unused = self.footnotes.keys().filter(|k| !used.contains(*k)).count();
         if unused > 0 {
-            self.warnings
-                .push(format!("{unused} Fußnote(n) ohne Verweis weggelassen."));
+            self.warn(format!("{unused} Fußnote(n) ohne Verweis weggelassen."));
         }
         body.trim().to_string()
     }
@@ -2410,6 +2467,30 @@ mod tests {
             conversion.typst,
             "#callout(kind: \"note\")[\nKurzer #emph[Hinweis]\n]\n"
         );
+    }
+
+    #[test]
+    fn warnings_carry_source_line() {
+        let options = Options {
+            standalone: false,
+            ..Options::default()
+        };
+        let source =
+            "---\ntitle: T\n---\n:::tip\nText\n:::\n\n![x](http://a/b.png)\n\n[weg](#nirgends)\n";
+        let warnings = markdown_to_typst(source, &options).warnings;
+        assert_eq!(warnings[0].line, Some(8), "{warnings:?}");
+        assert!(warnings[0].message.contains("Entferntes Bild"));
+        // Interne Links werden erst am Ende geprüft – ohne Zeile.
+        assert_eq!(warnings[1].line, None);
+
+        let conversion = mdx("import A from './a'\n\n<Foo>\n\nInhalt\n\n</Foo>\n");
+        let foo = conversion
+            .warnings
+            .iter()
+            .find(|w| w.message.contains("<Foo>"))
+            .unwrap();
+        assert_eq!(foo.line, Some(3));
+        assert_eq!(foo.to_string(), format!("Zeile 3: {}", foo.message));
     }
 
     #[test]

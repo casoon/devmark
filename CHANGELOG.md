@@ -9,6 +9,7 @@ Alle nennenswerten Änderungen an DevMark stehen hier. DevMark folgt
 
 - **Schreiben:** Über dem Text stehen Speicherstand und Wortzahl, bei Notizen zusätzlich die `#tags` (Klick filtert die Notizliste).
 - **Schreiben:** Gliederung am rechten Rand – ein Strich je Überschrift, Klick springt hin.
+- **Druck:** Die Kopfzeile der Druckvorschau zeigt Quelle → Ziel und den Bau-Status (Satzzeit bzw. Zahl der Hinweise). Klick listet die Hinweise; solche mit Zeilenangabe springen an die Stelle im Text. Auch `devmark-typst` nennt bei Hinweisen die Zeile.
 - **Notizen:** Navigation „Favoriten“ zeigt nur markierte Notizen.
 - **Notizen:** Menü Notizen → „Notiz im Workspace speichern …“ legt die aktive Notiz als Markdown-Datei im Workspace ab, „Notizordner im Finder zeigen“ und „Notizordner wählen …“ führen zum bzw. wechseln den Ordner.
 - **Workspace:** Umschalter oben in der Navigation mit Ordnername, zuletzt geöffneten Workspaces und „Ordner öffnen …“; Menü Datei → „Workspace öffnen …“.

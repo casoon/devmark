@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use devmark_writing::authoring::{self, Action as Format, Syntax, Tabstops};
 use devmark_writing::templates::{DocInfo, DocType};
@@ -338,6 +338,18 @@ struct Preview {
     pages: Vec<(Arc<Image>, f32)>,
     total_pages: usize,
     error: Option<String>,
+    /// Kopfzeile: „text.md → text.pdf“.
+    title: String,
+    /// Dauer des letzten Satzes.
+    elapsed: Option<Duration>,
+    warnings: Vec<PreviewWarning>,
+    show_warnings: bool,
+}
+
+/// Hinweis aus Umwandlung oder Satz; `line` (ab 0) zeigt in den Text im Editor.
+struct PreviewWarning {
+    text: String,
+    line: Option<u32>,
 }
 
 /// Vorschau-Auflösung: 1,5 Pixel pro Punkt ist auf Retina scharf genug und schnell.
@@ -908,25 +920,44 @@ impl Workspace {
             source = devmark_notes::strip_note_links(&source);
         }
         let path = buffer.path.clone();
+        let pdf_name = if buffer.note_id.is_some() {
+            format!("{}.pdf", buffer.label())
+        } else {
+            file_name(&path.with_extension("pdf"))
+        };
+        let title = format!("{} → {pdf_name}", buffer.label());
         self.preview_task = cx.spawn(async move |this, cx| {
             if !delay.is_zero() {
                 cx.background_executor().timer(delay).await;
             }
             let render_path = path.clone();
-            let result = cx
+            let (result, mut warnings, elapsed) = cx
                 .background_spawn(async move {
+                    let started = Instant::now();
+                    let mut warnings = Vec::new();
                     let (typst, main_path) = match syntax {
-                        Syntax::Markdown => (
-                            markdown_to_typst(&source, &Options::for_file(&render_path)).typst,
-                            render_path.with_extension("typ"),
-                        ),
+                        Syntax::Markdown => {
+                            let conversion =
+                                markdown_to_typst(&source, &Options::for_file(&render_path));
+                            warnings.extend(conversion.warnings.into_iter().map(|w| {
+                                PreviewWarning {
+                                    text: w.message,
+                                    line: w.line.map(|line| line.saturating_sub(1) as u32),
+                                }
+                            }));
+                            (conversion.typst, render_path.with_extension("typ"))
+                        }
                         Syntax::Typst => (source, render_path),
                     };
-                    render_pages(&typst, &main_path, PREVIEW_PIXEL_PER_PT, PREVIEW_MAX_PAGES)
+                    let result =
+                        render_pages(&typst, &main_path, PREVIEW_PIXEL_PER_PT, PREVIEW_MAX_PAGES);
+                    (result, warnings, started.elapsed())
                 })
                 .await;
             this.update(cx, |this, cx| {
                 let same_document = this.preview.path.as_ref() == Some(&path);
+                this.preview.title = title;
+                this.preview.elapsed = Some(elapsed);
                 match result {
                     Ok(rendered) => {
                         let pages = rendered
@@ -946,6 +977,17 @@ impl Workspace {
                         }
                         this.preview.total_pages = rendered.total_pages;
                         this.preview.error = None;
+                        // Zeilen im erzeugten Typst passen nur bei Typst-Dateien zum Editor.
+                        warnings.extend(rendered.warnings.into_iter().map(|w| match syntax {
+                            Syntax::Typst => PreviewWarning {
+                                text: w.message,
+                                line: w.line.map(|line| line.saturating_sub(1) as u32),
+                            },
+                            Syntax::Markdown => PreviewWarning {
+                                text: format!("Satz: {}", w.message),
+                                line: None,
+                            },
+                        }));
                     }
                     Err(err) => {
                         // Letzten guten Stand stehen lassen, Fehler darüber anzeigen.
@@ -957,6 +999,10 @@ impl Workspace {
                         this.preview.error = Some(err.to_string());
                     }
                 }
+                if warnings.is_empty() {
+                    this.preview.show_warnings = false;
+                }
+                this.preview.warnings = warnings;
                 this.preview.path = Some(path);
                 cx.notify();
             })
@@ -1235,7 +1281,7 @@ impl Workspace {
                     .warnings
                     .iter()
                     .take(5)
-                    .cloned()
+                    .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join("\n• ")
             )
@@ -1798,10 +1844,107 @@ impl Workspace {
         list
     }
 
+    /// Kopfzeile der Vorschau: Quelle → Ziel, Bau-Status; Klick zeigt die Hinweise.
+    fn render_preview_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let preview = &self.preview;
+        let status = match (&preview.error, preview.warnings.len(), preview.elapsed) {
+            (Some(_), _, _) => "✗ Fehler beim Setzen".to_string(),
+            (None, _, None) => "wird gesetzt …".to_string(),
+            (None, 0, Some(elapsed)) => format!("✓ gesetzt in {} ms", elapsed.as_millis()),
+            (None, 1, Some(_)) => "⚠ 1 Hinweis".to_string(),
+            (None, n, Some(_)) => format!("⚠ {n} Hinweise"),
+        };
+        let status_color = match (&preview.error, preview.warnings.is_empty()) {
+            (Some(_), _) => cx.theme().danger,
+            (None, false) => cx.theme().warning,
+            (None, true) => cx.theme().muted_foreground,
+        };
+        let mut status = Button::new("preview-status")
+            .ghost()
+            .xsmall()
+            .text_color(status_color)
+            .label(status)
+            .selected(preview.show_warnings);
+        if !preview.warnings.is_empty() {
+            status = status
+                .tooltip("Hinweise zeigen")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.preview.show_warnings = !this.preview.show_warnings;
+                    cx.notify();
+                }));
+        }
+        let mut header = v_flex()
+            .flex_none()
+            .px_3()
+            .py_1()
+            .gap_1()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().muted)
+            .text_xs()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(preview.title.clone()),
+                    )
+                    .child(status),
+            );
+        if preview.show_warnings {
+            for (ix, warning) in preview.warnings.iter().enumerate() {
+                let text = match warning.line {
+                    Some(line) => format!("Zeile {}: {}", line + 1, warning.text),
+                    None => warning.text.clone(),
+                };
+                let mut row = div()
+                    .id(("preview-warning", ix))
+                    .px_1()
+                    .rounded(cx.theme().radius)
+                    .whitespace_normal()
+                    .child(text);
+                if let Some(line) = warning.line {
+                    row = row
+                        .cursor_pointer()
+                        .hover(|style| style.bg(cx.theme().accent))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.go_to_line(line, window, cx)
+                        }));
+                }
+                header = header.child(row);
+            }
+        }
+        header
+    }
+
+    /// Setzt den Cursor im aktiven Text an den Anfang von `line` (ab 0).
+    fn go_to_line(&mut self, line: u32, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(buffer) = self.active_buffer() else {
+            return;
+        };
+        buffer.editor.update(cx, |state, cx| {
+            state.set_cursor_position(lsp_types::Position::new(line, 0), window, cx);
+            state.focus(window, cx);
+        });
+    }
+
     fn render_preview(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .size_full()
+            .child(self.render_preview_header(cx))
+            .child(self.render_preview_pages(cx))
+    }
+
+    fn render_preview_pages(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut column = v_flex()
             .id("preview-panel")
-            .size_full()
+            .flex_1()
+            .min_h_0()
+            .w_full()
             .overflow_y_scroll()
             .p_4()
             .gap_4()
