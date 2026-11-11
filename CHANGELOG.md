@@ -9,6 +9,10 @@ All notable changes to DevMark are listed here. DevMark follows
 
 - **Export:** HTML pages follow light and dark mode, use the `accent` colour and get a navigation over all pages; with `base_url` in `.devmark/export.toml` the export writes a `sitemap.xml`. See [Export as HTML](https://casoon.github.io/devmark/docs/guides/print-and-pdf/#export-as-html).
 
+### Changed
+
+- **Pages:** the home page shows the path of a document from Markdown to preview, PDF and web pages, and names the prebuilt downloads; the site uses the shared theme 0.12.11.
+
 ## [0.3.0] - 2026-11-11
 
 ### Changed

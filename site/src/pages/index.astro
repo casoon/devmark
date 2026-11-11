@@ -9,6 +9,7 @@ import {
   Facts,
   Faq,
   Features,
+  Flow,
   Hero,
   Install,
   Keymap,
@@ -107,6 +108,18 @@ cargo run -p devmark -- ~/projects/my-text`;
     ]}
   />
 
+  <Flow
+    eyebrow="From draft to published"
+    title="One file, all the way through."
+    lead="A document stays one Markdown or Typst file. **Preview, PDF and web pages are made from it – nothing to copy into another program.**"
+    stages={[
+      { label: 'Write', artifact: 'report.md', title: 'Write in Markdown', body: 'Frontmatter sets title, language, numbering and the accent colour.' },
+      { label: 'Preview', artifact: 'Cmd/Ctrl-Shift-V', title: 'See the pages', body: 'Typst sets the pages next to the text as you type; warnings jump to their line.' },
+      { label: 'Print', artifact: 'report.pdf', title: 'Export the PDF', body: 'The same typesetting, written to the workspace – offline.' },
+      { label: 'Publish', artifact: 'index.html', title: 'Export web pages', body: 'A document or the whole folder as static HTML with navigation, light and dark mode, no JavaScript.' },
+    ]}
+  />
+
   <div id="print">
     <Spotlight
       eyebrow="From text to PDF"
@@ -195,7 +208,7 @@ cargo run -p devmark -- ~/projects/my-text`;
     items={[
       {
         q: 'Are there prebuilt downloads?',
-        a: 'Not yet. DevMark is built from the repository; on macOS, scripts/bundle-macos.sh creates an app.',
+        a: 'Yes. The GitHub releases have a universal app for macOS and an archive for Linux (x86_64), each with a checksum and signed build provenance. On other systems, build it from the repository.',
       },
       {
         q: 'What happens to my notes if I stop using DevMark?',
