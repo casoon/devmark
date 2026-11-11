@@ -1,0 +1,24 @@
+---
+/**
+ * A real app screenshot. The image files live in docs/assets/, so the README and the site use the
+ * same source; `src` is an Astro image import, width and height come from the file. DevMark has one
+ * light appearance, so the same image stands in both page themes.
+ */
+interface Props {
+  image: ImageMetadata;
+  alt: string;
+}
+
+const { image, alt } = Astro.props;
+---
+
+<img src={image.src} width={image.width} height={image.height} alt={alt} decoding="async" />
+
+<style>
+  img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 10px;
+  }
+</style>

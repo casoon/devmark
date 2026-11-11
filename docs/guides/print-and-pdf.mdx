@@ -1,0 +1,60 @@
+---
+title: Print preview and PDF
+description: Live preview next to the text, PDF export through Typst typesetting, and converting Markdown to Typst.
+order: 2
+---
+
+DevMark typesets Markdown and Typst with [Typst](https://typst.app). Everything runs offline; Typst packages are loaded from the local cache only.
+
+<Callout type="note">
+
+No Typst installation is needed. The typesetter is built into DevMark.
+
+</Callout>
+
+## Print preview
+
+`Cmd/Ctrl-Shift-V` opens the preview next to the text. It shows the typeset pages and follows as you type. In notes, links to other notes appear as text, not as links.
+
+The header of the preview names source and target (`report.md → report.pdf`) and the build status: the typesetting time, or the number of warnings. Click it to list the warnings; those with a line number jump to that line in the text.
+
+## Export a PDF
+
+`Cmd/Ctrl-Shift-E` writes the document as a PDF into the workspace. Paper size, table of contents and numbering are controlled by the frontmatter at the top of the file:
+
+```markdown
+---
+title: "Quarterly report"
+author: "Platform team"
+date: "2026-11-11"
+lang: en
+toc: true
+numbering: true
+paper: a4
+accent: "#0a7f6f"
+---
+```
+
+| Field | Effect |
+|---|---|
+| `title`, `author`, `date` | Title block of the document |
+| `lang` | Language for hyphenation and quotation marks |
+| `toc` | Table of contents at the start |
+| `numbering` | Numbered headings |
+| `paper` | Paper size, e.g. `a4` |
+| `accent` | Colour for headings, links, callouts and table headers; a warning appears if it has too little contrast on white paper |
+
+## Export as HTML
+
+Datei → “Als HTML exportieren …“ (export as HTML) writes the current document as a static page, Notizen → “Notizordner als HTML exportieren …“ (export notes folder as HTML) the whole notes folder. Each Markdown file becomes one `.html` file, all sharing one stylesheet; there is no JavaScript and nothing loads from the network. Links between notes become relative `.html` links, folders stay folders, and callouts look as they do in the PDF. With more than one page, an `index.html` lists them all. The result can go to any static host as it is.
+
+## What Markdown supports
+
+- CommonMark and GitHub Markdown with tables, footnotes and task lists
+- Callouts (`> [!NOTE]`) and LaTeX math
+- Frontmatter for the title block and page setup
+- MDX: imports and expressions are removed, callout components and `:::tip` blocks become callouts
+
+## Markdown → Typst
+
+`Cmd/Ctrl-Shift-T` converts the current Markdown document into a Typst file – for texts whose typesetting you want to refine by hand afterwards. The same conversion is available on the command line as [devmark-typst](../../reference/devmark-typst/).

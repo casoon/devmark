@@ -1,0 +1,227 @@
+---
+import config from 'virtual:casoon-pages/config';
+import {
+  AnchorGrid,
+  Badge,
+  Badges,
+  CallToAction,
+  CodeBlock,
+  Facts,
+  Faq,
+  Features,
+  Hero,
+  Install,
+  Keymap,
+  Quickstart,
+  Spotlight,
+} from '@casoon/pages-theme/components';
+import Base from '@casoon/pages-theme/layouts/Base.astro';
+import { url } from '@casoon/pages-theme/url';
+// Shared with the README: docs/assets/ is the single source of the screenshots.
+import notesShot from '../../../docs/assets/screenshot-notes.webp';
+import writingShot from '../../../docs/assets/screenshot-writing.webp';
+import Screenshot from '../components/Screenshot.astro';
+import { diagram } from '../diagrams';
+
+const build = `git clone https://github.com/casoon/devmark.git
+cd devmark
+cargo run -p devmark -- ~/projects/my-text`;
+---
+
+<Base>
+  <Hero
+    layout="editorial"
+    title="Code, notes and writing – one editor."
+    lead="DevMark is a desktop editor for people who move between project files, notes and long-form text. Markdown and Typst with a live print preview and PDF export, notes as plain Markdown files – local, no account, no server."
+  >
+    <Install
+      commands={[
+        { label: 'macOS app', command: 'scripts/bundle-macos.sh --install' },
+        { label: 'cargo', command: 'cargo run -p devmark -- <folder>' },
+      ]}
+    />
+    <Badges>
+      <Badge>Apache-2.0 OR MIT</Badge>
+      <Badge>v{config.version}</Badge>
+      <Badge>macOS · Windows · Linux</Badge>
+      <Badge>Rust</Badge>
+    </Badges>
+    <Screenshot
+      slot="output"
+      image={writingShot}
+      alt="DevMark in focus mode: on the left the Markdown source of an article with frontmatter, headings, a note callout, a bullet list and a table; on the right the print preview with the same article typeset on an A4 page, with numbered headings, a highlighted note, the table and a code block."
+    />
+  </Hero>
+
+  <AnchorGrid
+    items={[
+      {
+        label: 'Editor',
+        title: 'One folder, one workspace',
+        body: 'File tree, syntax highlighting with Tree-sitter, tabs and split view for your project folder.',
+        href: url('docs/getting-started/first-steps/'),
+        tone: 'accent',
+      },
+      {
+        label: 'Writing',
+        title: 'Markdown and Typst',
+        body: 'Formatting bar, an insert list on “/”, templates from article to business letter.',
+        href: url('docs/guides/writing/'),
+        tone: 'accent',
+      },
+      {
+        label: 'Print',
+        title: 'Preview and PDF',
+        body: 'Typeset pages next to the text, PDF export through Typst – offline.',
+        href: '#print',
+        tone: 'brand',
+      },
+      {
+        label: 'Notes',
+        title: 'Notes are files',
+        body: 'Markdown in a folder of their own, with search, tags, links and history.',
+        href: '#notes',
+        tone: 'brand',
+      },
+    ]}
+  />
+
+  <Features
+    items={[
+      {
+        title: 'Three ways of working, one program',
+        body: 'Edit project files, work on a report, jot something down – without switching between an editor, a word processor and a notes app.',
+      },
+      {
+        title: 'Writing with real typesetting',
+        body: 'Markdown and Typst are typeset with Typst. The print preview sits next to the text; the PDF is one shortcut away.',
+      },
+      {
+        title: 'No data in someone else’s format',
+        body: 'Notes are Markdown files, links are relative links. Any other program can read them, GitHub included.',
+      },
+      {
+        title: 'Local and offline',
+        body: 'No account, no server. Even Typst packages are loaded from the local cache only.',
+      },
+    ]}
+  />
+
+  <div id="print">
+    <Spotlight
+      eyebrow="From text to PDF"
+      title="Write it, see it, set it."
+      lead="**What you write is what gets printed.** Markdown is converted to Typst, and Typst sets the pages – for the preview as you type and for the PDF."
+      points={[
+        '**Frontmatter drives the layout:** title, author, language, table of contents, numbering, paper size.',
+        '**More than CommonMark:** tables, footnotes, task lists, callouts, LaTeX math and MDX.',
+        '**On the command line:** `devmark-typst` converts the same files in scripts and builds.',
+      ]}
+      links={[
+        { label: 'Print preview and PDF', href: url('docs/guides/print-and-pdf/') },
+        { label: 'devmark-typst', href: url('docs/reference/devmark-typst/') },
+      ]}
+    >
+      <div class="diagram" set:html={diagram('print')} />
+    </Spotlight>
+  </div>
+
+  <div id="notes">
+    <Spotlight
+      reverse
+      eyebrow="Notes"
+      title="Write now, never locked in."
+      lead="**A note is a Markdown file in the notes folder.** Folders are real subfolders, the first line becomes the file name, and saving happens on its own."
+      points={[
+        '**Find:** full-text search, `#tags` in the text or the frontmatter, favorites.',
+        '**Link:** `[[` inserts a relative Markdown link; renaming and moving update it, backlinks show below the note.',
+        '**Sync:** put the notes folder into iCloud Drive, Nextcloud, Dropbox or Syncthing – or keep it as a Git repository.',
+      ]}
+      links={[
+        { label: 'Notes', href: url('docs/guides/notes/') },
+        { label: 'Syncing notes', href: url('docs/guides/sync/') },
+      ]}
+    >
+      <Screenshot
+        image={notesShot}
+        alt="DevMark showing notes: navigation with the note folders Decisions and Meetings and a list of tags, the note list with title, time and preview, and the open meeting note “Sync options, 10 Nov” with headings, a bullet list, open tasks, a relative link to an architecture decision and the backlink to it below."
+      />
+    </Spotlight>
+  </div>
+
+  <Facts
+    items={[
+      { value: '6', label: 'templates, from article to business letter' },
+      { value: '30 days', label: 'deleted notes stay in the trash' },
+      { value: '3', label: 'systems: macOS, Windows, Linux' },
+      { value: '0', label: 'accounts or servers needed' },
+    ]}
+  />
+
+  <Keymap
+    heading="The shortcuts that matter"
+    groups={[
+      {
+        heading: 'Writing',
+        items: [
+          { label: 'New document from template', keys: ['Cmd/Ctrl', 'N'] },
+          { label: 'Print preview', keys: ['Cmd/Ctrl', 'Shift', 'V'] },
+          { label: 'Export PDF', keys: ['Cmd/Ctrl', 'Shift', 'E'] },
+        ],
+      },
+      {
+        heading: 'Notes',
+        items: [
+          { label: 'New note', keys: ['Cmd/Ctrl', 'Shift', 'N'] },
+          { label: 'Search notes', keys: ['Cmd/Ctrl', 'Shift', 'F'] },
+          { label: 'Focus mode', keys: ['Cmd/Ctrl', 'Shift', 'Enter'] },
+        ],
+      },
+    ]}
+  />
+
+  <Quickstart
+    lead="DevMark is built from source. With a Rust toolchain it takes three lines; on macOS a script turns it into an app."
+    steps={[
+      'Install Rust with <code>rustup</code>.',
+      'Clone the repository and start it with a folder as the workspace.',
+      'On macOS, optionally run <code>scripts/bundle-macos.sh --install</code> for an app in the Applications folder.',
+    ]}
+  >
+    <CodeBlock code={build} lang="sh" title="Terminal" label="Build and run" />
+  </Quickstart>
+
+  <Faq
+    items={[
+      {
+        q: 'Are there prebuilt downloads?',
+        a: 'Not yet. DevMark is built from the repository; on macOS, scripts/bundle-macos.sh creates an app.',
+      },
+      {
+        q: 'What happens to my notes if I stop using DevMark?',
+        a: 'Nothing. They are Markdown files in a normal folder, and links are relative links. The index for search and history lives separately.',
+      },
+      {
+        q: 'Do I need Typst or LaTeX installed?',
+        a: 'No. The Typst typesetter is built in and runs offline. Typst packages are loaded from the local cache only.',
+      },
+      {
+        q: 'Is the interface in English?',
+        a: 'Not yet – the interface is in German for now. The documentation names the menu items as they appear in the app.',
+      },
+    ]}
+  />
+
+  <CallToAction
+    title="Build it, start it, write."
+    href={url('docs/getting-started/installation/')}
+    label="Go to installation"
+  />
+</Base>
+
+<style>
+  .diagram :global(svg) {
+    width: 100%;
+    height: auto;
+  }
+</style>
