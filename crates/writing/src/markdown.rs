@@ -98,6 +98,28 @@ pub fn markdown_to_typst(source: &str, options: &Options) -> Conversion {
         .map(str::to_ascii_lowercase)
         .unwrap_or_else(|| options.lang.clone());
 
+    let accent = metadata.accent.as_deref().and_then(|value| {
+        let line = source[..source.len() - body.len()]
+            .lines()
+            .position(|l| l.trim_start().to_ascii_lowercase().starts_with("accent"))
+            .map(|ix| ix + 1);
+        let warn = |message: String| Warning { line, message };
+        let Some(rgb) = parse_hex_color(value) else {
+            warnings.push(warn(format!(
+                "Akzentfarbe „{value}“ nicht erkannt (erwartet z. B. \"#0a7f6f\") – ignoriert."
+            )));
+            return None;
+        };
+        let contrast = contrast_on_white(rgb);
+        if contrast < 4.5 {
+            let ratio = format!("{contrast:.1}").replace('.', ",");
+            warnings.push(warn(format!(
+                "Akzentfarbe „{value}“ hat zu wenig Kontrast zu Papierweiß ({ratio}:1, nötig sind 4,5:1) – Überschriften und Links sind schwer lesbar."
+            )));
+        }
+        Some(format!("#{:02x}{:02x}{:02x}", rgb.0, rgb.1, rgb.2))
+    });
+
     let mut renderer = Renderer::new(options);
     renderer.warnings = warnings;
     renderer.line_origins = line_origins;
@@ -1578,14 +1600,34 @@ impl<'a> Renderer<'a> {
             out.push_str("#set heading(numbering: \"1.1\")\n");
         }
         out.push_str("#show heading: set block(above: 1.4em, below: 0.8em)\n");
+        let accent = meta
+            .accent
+            .as_deref()
+            .and_then(parse_hex_color)
+            .map(|(r, g, b)| format!("rgb(\"#{r:02x}{g:02x}{b:02x}\")"));
+        if let Some(accent) = &accent {
+            out.push_str(&format!("#let accent = {accent}\n"));
+            out.push_str("#show heading: set text(fill: accent)\n");
+        }
         out.push_str("#show raw.where(block: true): set block(fill: luma(246), inset: 10pt, radius: 3pt, width: 100%)\n");
-        out.push_str("#show link: set text(fill: rgb(\"#1a5fb4\"))\n");
+        if accent.is_some() {
+            out.push_str("#show link: set text(fill: accent)\n");
+        } else {
+            out.push_str("#show link: set text(fill: rgb(\"#1a5fb4\"))\n");
+        }
         if body.contains("#quote(block: true)") {
             out.push_str("#show quote.where(block: true): it => block(inset: (left: 12pt, y: 2pt), stroke: (left: 2pt + luma(200)), it.body)\n");
         }
         if self.has_table {
             out.push_str("#set table(stroke: 0.5pt + luma(190), inset: 6pt)\n");
-            out.push_str("#show table.cell.where(y: 0): set text(weight: \"bold\")\n");
+            if accent.is_some() {
+                out.push_str("#set table(fill: (_, y) => if y == 0 { accent.lighten(88%) })\n");
+                out.push_str(
+                    "#show table.cell.where(y: 0): set text(weight: \"bold\", fill: accent.darken(20%))\n",
+                );
+            } else {
+                out.push_str("#show table.cell.where(y: 0): set text(weight: \"bold\")\n");
+            }
         }
 
         let mut helpers = String::new();
@@ -1598,8 +1640,14 @@ impl<'a> Renderer<'a> {
                 label("warning"),
                 label("caution"),
             );
+            // Hinweise in der Akzentfarbe; Tipp/Warnung/Vorsicht behalten ihre Signalfarben.
+            let note_color = if accent.is_some() {
+                "accent"
+            } else {
+                "rgb(\"#0969da\")"
+            };
             helpers.push_str(&format!(
-                "#let callout(kind: \"note\", title: none, body) = {{\n  let styles = (\n    note: (rgb(\"#0969da\"), [{note}]),\n    tip: (rgb(\"#1a7f37\"), [{tip}]),\n    important: (rgb(\"#8250df\"), [{important}]),\n    warning: (rgb(\"#9a6700\"), [{warning}]),\n    caution: (rgb(\"#cf222e\"), [{caution}]),\n    details: (luma(110), none),\n  )\n  let (accent, label) = styles.at(kind, default: styles.note)\n  let heading = if title != none {{ title }} else {{ label }}\n  block(\n    width: 100%,\n    inset: (left: 12pt, rest: 10pt),\n    stroke: (left: 3pt + accent),\n    fill: accent.lighten(93%),\n    radius: (right: 3pt),\n    {{\n      if heading != none {{ text(weight: \"bold\", fill: accent, heading); parbreak() }}\n      body\n    }},\n  )\n}}\n"
+                "#let callout(kind: \"note\", title: none, body) = {{\n  let styles = (\n    note: ({note_color}, [{note}]),\n    tip: (rgb(\"#1a7f37\"), [{tip}]),\n    important: (rgb(\"#8250df\"), [{important}]),\n    warning: (rgb(\"#9a6700\"), [{warning}]),\n    caution: (rgb(\"#cf222e\"), [{caution}]),\n    details: (luma(110), none),\n  )\n  let (accent, label) = styles.at(kind, default: styles.note)\n  let heading = if title != none {{ title }} else {{ label }}\n  block(\n    width: 100%,\n    inset: (left: 12pt, rest: 10pt),\n    stroke: (left: 3pt + accent),\n    fill: accent.lighten(93%),\n    radius: (right: 3pt),\n    {{\n      if heading != none {{ text(weight: \"bold\", fill: accent, heading); parbreak() }}\n      body\n    }},\n  )\n}}\n"
             ));
         }
         if self.needs.contains("task") {
@@ -1843,6 +1891,41 @@ pub(crate) fn callout_kind(kind: BlockQuoteKind) -> &'static str {
         BlockQuoteKind::Warning => "warning",
         BlockQuoteKind::Caution => "caution",
     }
+}
+
+/// `#rgb` oder `#rrggbb` (das `#` darf fehlen) → RGB.
+fn parse_hex_color(value: &str) -> Option<(u8, u8, u8)> {
+    let hex = value.trim().trim_start_matches('#');
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let channel = |s: &str| u8::from_str_radix(s, 16).ok();
+    match hex.len() {
+        3 => {
+            let mut digits = hex.chars().map(|c| channel(&c.to_string().repeat(2)));
+            Some((digits.next()??, digits.next()??, digits.next()??))
+        }
+        6 => Some((
+            channel(&hex[0..2])?,
+            channel(&hex[2..4])?,
+            channel(&hex[4..6])?,
+        )),
+        _ => None,
+    }
+}
+
+/// Kontrastverhältnis (WCAG) einer Farbe zu Weiß, 1 bis 21.
+fn contrast_on_white((r, g, b): (u8, u8, u8)) -> f64 {
+    let linear = |c: u8| {
+        let c = f64::from(c) / 255.0;
+        if c <= 0.039_28 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance = 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+    1.05 / (luminance + 0.05)
 }
 
 /// Überschrift einer Hinweisbox ohne eigenen Titel; `details` hat keine.
@@ -2511,6 +2594,47 @@ mod tests {
             .unwrap();
         assert_eq!(foo.line, Some(3));
         assert_eq!(foo.to_string(), format!("Zeile 3: {}", foo.message));
+    }
+
+    #[test]
+    fn accent_color_from_frontmatter() {
+        let options = Options::default();
+        let conversion = markdown_to_typst(
+            "---\ntitle: T\naccent: \"#0A7F6F\"\n---\n> [!NOTE]\n> Box\n\n| A |\n|---|\n| 1 |\n",
+            &options,
+        );
+        assert!(conversion.warnings.is_empty(), "{:?}", conversion.warnings);
+        let typst = &conversion.typst;
+        assert!(typst.contains("#let accent = rgb(\"#0a7f6f\")"));
+        assert!(typst.contains("#show heading: set text(fill: accent)"));
+        assert!(typst.contains("#show link: set text(fill: accent)"));
+        assert!(typst.contains("note: (accent, [Hinweis])"));
+        assert!(typst.contains("fill: accent.darken(20%)"));
+        crate::compile_pdf(typst, Path::new("/tmp/devmark-accent.typ")).unwrap();
+
+        let pale = markdown_to_typst("---\naccent: \"#ffd700\"\n---\nText\n", &options);
+        assert_eq!(pale.warnings.len(), 1);
+        assert_eq!(pale.warnings[0].line, Some(2));
+        assert!(
+            pale.warnings[0].message.contains("(1,4:1"),
+            "{:?}",
+            pale.warnings
+        );
+        assert!(pale.typst.contains("#let accent"));
+
+        let broken = markdown_to_typst("---\naccent: grün\n---\nText\n", &options);
+        assert!(broken.warnings[0].message.contains("nicht erkannt"));
+        assert!(!broken.typst.contains("accent"));
+    }
+
+    #[test]
+    fn hex_colors_and_contrast() {
+        assert_eq!(parse_hex_color("#0a7f6f"), Some((10, 127, 111)));
+        assert_eq!(parse_hex_color("f80"), Some((255, 136, 0)));
+        assert_eq!(parse_hex_color("#12345"), None);
+        assert!((contrast_on_white((0, 0, 0)) - 21.0).abs() < 0.01);
+        assert!((contrast_on_white((255, 255, 255)) - 1.0).abs() < 0.01);
+        assert!(contrast_on_white((10, 127, 111)) > 4.5);
     }
 
     #[test]

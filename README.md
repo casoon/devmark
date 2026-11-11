@@ -53,7 +53,7 @@ scripts/bundle-macos.sh --install   # DevMark.app nach /Applications
 cargo run -p devmark-writing --bin devmark-typst -- text.md --pdf
 ```
 
-Unterstützt CommonMark/GFM (Tabellen, Fußnoten, Aufgabenlisten, `> [!NOTE]`), LaTeX-Mathe, Frontmatter (`title`, `author`, `date`, `lang`, `toc`, `numbering`, `paper`), MDX (Imports/Ausdrücke werden entfernt, Hinweis-Komponenten und `:::tip`-Blöcke werden zu Hinweisboxen). Alles läuft offline; Typst-Pakete nur aus dem lokalen Cache.
+Unterstützt CommonMark/GFM (Tabellen, Fußnoten, Aufgabenlisten, `> [!NOTE]`), LaTeX-Mathe, Frontmatter (`title`, `author`, `date`, `lang`, `toc`, `numbering`, `paper`, `accent` – Akzentfarbe für Überschriften, Links, Hinweisboxen und Tabellenkopf), MDX (Imports/Ausdrücke werden entfernt, Hinweis-Komponenten und `:::tip`-Blöcke werden zu Hinweisboxen). Alles läuft offline; Typst-Pakete nur aus dem lokalen Cache.
 
 ## Daten
 
