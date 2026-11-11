@@ -1,0 +1,224 @@
+---
+import config from 'virtual:casoon-pages/config';
+import {
+  AnchorGrid,
+  Badge,
+  Badges,
+  CallToAction,
+  CodeBlock,
+  Facts,
+  Faq,
+  Features,
+  Hero,
+  Install,
+  Keymap,
+  Quickstart,
+  Spotlight,
+} from '@casoon/pages-theme/components';
+import Base from '@casoon/pages-theme/layouts/Base.astro';
+import { url } from '@casoon/pages-theme/url';
+import { diagram } from '../diagrams';
+import Screenshot from '../components/Screenshot.astro';
+
+const build = `git clone https://github.com/casoon/devmark.git
+cd devmark
+cargo run -p devmark -- ~/Projekte/mein-text`;
+---
+
+<Base>
+  <Hero
+    layout="editorial"
+    title="Code, Notizen, Texte – ein Editor."
+    lead="DevMark ist ein Desktop-Editor für alle, die zwischen Projektdateien, Notizen und Texten pendeln. Markdown und Typst mit Live-Druckvorschau und PDF-Export, Notizen als normale Markdown-Dateien – lokal, ohne Konto, ohne Server."
+  >
+    <Install
+      commands={[
+        { label: 'macOS-App', command: 'scripts/bundle-macos.sh --install' },
+        { label: 'cargo', command: 'cargo run -p devmark -- <ordner>' },
+      ]}
+    />
+    <Badges>
+      <Badge>Apache-2.0 OR MIT</Badge>
+      <Badge>v{config.version}</Badge>
+      <Badge>macOS · Windows · Linux</Badge>
+      <Badge>Rust</Badge>
+    </Badges>
+    <Screenshot
+      slot="output"
+      name="hero"
+      alt="DevMark im Fokusmodus: links ein Markdown-Quartalsbericht mit Frontmatter, Überschriften, Hinweisbox und Tabelle in Serifenschrift, rechts die Druckvorschau mit derselben Seite, gesetzt mit nummerierten Überschriften, Tabelle, Aufgabenliste und Fußnote."
+    />
+  </Hero>
+
+  <AnchorGrid
+    items={[
+      {
+        label: 'Editor',
+        title: 'Ein Ordner, ein Workspace',
+        body: 'Dateibaum, Syntax-Highlighting mit Tree-sitter, Tabs und geteilte Ansicht für den Projektordner.',
+        href: url('docs/einstieg/erste-schritte/'),
+        tone: 'accent',
+      },
+      {
+        label: 'Schreiben',
+        title: 'Markdown und Typst',
+        body: 'Formatleiste, Einfüge-Liste mit „/“, Vorlagen vom Artikel bis zum Brief nach DIN 5008.',
+        href: url('docs/anleitungen/schreiben/'),
+        tone: 'accent',
+      },
+      {
+        label: 'Druck',
+        title: 'Vorschau und PDF',
+        body: 'Gesetzte Seiten neben dem Text, Export als PDF über Typst – offline.',
+        href: '#druck',
+        tone: 'brand',
+      },
+      {
+        label: 'Notizen',
+        title: 'Notizen sind Dateien',
+        body: 'Markdown im eigenen Ordner, mit Suche, Tags, Verknüpfungen und Verlauf.',
+        href: '#notizen',
+        tone: 'brand',
+      },
+    ]}
+  />
+
+  <Features
+    items={[
+      {
+        title: 'Drei Arbeitsweisen, ein Programm',
+        body: 'Projektdateien bearbeiten, an einem Bericht schreiben, schnell etwas notieren – ohne zwischen Editor, Textprogramm und Notiz-App zu wechseln.',
+      },
+      {
+        title: 'Schreiben mit echtem Satz',
+        body: 'Markdown und Typst werden mit Typst gesetzt. Die Druckvorschau steht neben dem Text, das PDF ist einen Tastendruck entfernt.',
+      },
+      {
+        title: 'Keine Daten in fremden Formaten',
+        body: 'Notizen sind Markdown-Dateien, Verknüpfungen sind relative Links. Jedes andere Programm kann sie lesen, auch GitHub.',
+      },
+      {
+        title: 'Lokal und offline',
+        body: 'Kein Konto, kein Server. Selbst Typst-Pakete kommen nur aus dem lokalen Cache.',
+      },
+    ]}
+  />
+
+  <div id="druck">
+    <Spotlight
+      eyebrow="Vom Text zum PDF"
+      title="Schreiben, sehen, setzen."
+      lead="**Was im Editor steht, ist das, was gedruckt wird.** Markdown wird in Typst umgewandelt, Typst setzt die Seiten – für die Vorschau beim Tippen und für das PDF."
+      points={[
+        '**Frontmatter steuert den Satz:** Titel, Autor, Sprache, Inhaltsverzeichnis, Nummerierung, Papierformat.',
+        '**Mehr als CommonMark:** Tabellen, Fußnoten, Aufgabenlisten, Hinweisboxen, LaTeX-Mathe und MDX.',
+        '**Auf der Kommandozeile:** `devmark-typst` wandelt dieselben Dateien in Skripten und Builds um.',
+      ]}
+      links={[
+        { label: 'Druckvorschau und PDF', href: url('docs/anleitungen/druck-und-pdf/') },
+        { label: 'devmark-typst', href: url('docs/referenz/devmark-typst/') },
+      ]}
+    >
+      <div class="diagram" set:html={diagram('druck')} />
+    </Spotlight>
+  </div>
+
+  <div id="notizen">
+    <Spotlight
+      reverse
+      eyebrow="Notizen"
+      title="Sofort schreiben, nie einsperren."
+      lead="**Eine Notiz ist eine Markdown-Datei im Notizordner.** Ordner sind echte Unterordner, die erste Zeile wird zum Dateinamen, gespeichert wird von selbst."
+      points={[
+        '**Finden:** Volltextsuche, `#tags` im Text oder im Frontmatter, Favoriten.',
+        '**Verknüpfen:** `[[` fügt einen relativen Markdown-Link ein; Umbenennen und Verschieben passen ihn an.',
+        '**Abgleichen:** Notizordner in iCloud Drive, Nextcloud, Dropbox oder Syncthing legen – oder als Git-Repository führen.',
+      ]}
+      links={[
+        { label: 'Notizen', href: url('docs/anleitungen/notizen/') },
+        { label: 'Notizen abgleichen', href: url('docs/anleitungen/sync/') },
+      ]}
+    >
+      <Screenshot
+        name="notizen"
+        alt="DevMark mit Notizen: links Navigation mit Notizordnern Lesen und Projekte und den Tags, in der Mitte die Notizliste mit Titel, Zeit und Vorschau, rechts die Notiz „Relaunch Website“ mit den Tags #projekt und #web und einem relativen Markdown-Link auf eine andere Notiz."
+      />
+    </Spotlight>
+  </div>
+
+  <Facts
+    items={[
+      { value: '6', label: 'Vorlagen, vom Artikel bis zum Brief nach DIN 5008' },
+      { value: '30 Tage', label: 'bleiben gelöschte Notizen im Papierkorb' },
+      { value: '3', label: 'Systeme: macOS, Windows, Linux' },
+      { value: '0', label: 'Konten oder Server nötig' },
+    ]}
+  />
+
+  <Keymap
+    heading="Die wichtigsten Tasten"
+    groups={[
+      {
+        heading: 'Schreiben',
+        items: [
+          { label: 'Neues Dokument aus Vorlage', keys: ['Cmd/Ctrl', 'N'] },
+          { label: 'Druckvorschau', keys: ['Cmd/Ctrl', 'Shift', 'V'] },
+          { label: 'PDF exportieren', keys: ['Cmd/Ctrl', 'Shift', 'E'] },
+        ],
+      },
+      {
+        heading: 'Notizen',
+        items: [
+          { label: 'Neue Notiz', keys: ['Cmd/Ctrl', 'Shift', 'N'] },
+          { label: 'Notizen durchsuchen', keys: ['Cmd/Ctrl', 'Shift', 'F'] },
+          { label: 'Fokusmodus', keys: ['Cmd/Ctrl', 'Shift', 'Enter'] },
+        ],
+      },
+    ]}
+  />
+
+  <Quickstart
+    lead="DevMark wird aus dem Quellcode gebaut. Mit einer Rust-Toolchain sind es drei Zeilen; unter macOS packt ein Skript daraus eine App."
+    steps={[
+      'Rust über <code>rustup</code> installieren.',
+      'Repository klonen und mit einem Ordner als Workspace starten.',
+      'Unter macOS optional <code>scripts/bundle-macos.sh --install</code> für eine App im Programme-Ordner.',
+    ]}
+  >
+    <CodeBlock code={build} lang="sh" title="Terminal" label="Bauen und starten" />
+  </Quickstart>
+
+  <Faq
+    items={[
+      {
+        q: 'Gibt es fertige Downloads?',
+        a: 'Noch nicht. DevMark wird aus dem Repository gebaut; unter macOS erzeugt scripts/bundle-macos.sh eine App.',
+      },
+      {
+        q: 'Was passiert mit meinen Notizen, wenn ich DevMark nicht mehr nutze?',
+        a: 'Nichts. Sie sind Markdown-Dateien in einem normalen Ordner, Verknüpfungen sind relative Links. Der Index für Suche und Verlauf liegt getrennt daneben.',
+      },
+      {
+        q: 'Brauche ich Typst oder LaTeX auf dem Rechner?',
+        a: 'Nein. Der Typst-Satz ist eingebaut und läuft offline. Typst-Pakete werden nur aus dem lokalen Cache geladen.',
+      },
+      {
+        q: 'Wie gleiche ich Notizen zwischen Rechnern ab?',
+        a: 'Über den Notizordner: in einen Cloud-Ordner legen oder als Git-Repository führen. Änderungen von außen übernimmt DevMark, sobald das Fenster aktiv wird.',
+      },
+    ]}
+  />
+
+  <CallToAction
+    title="Bauen, starten, schreiben."
+    href={url('docs/einstieg/installation/')}
+    label="Zur Installation"
+  />
+</Base>
+
+<style>
+  .diagram :global(svg) {
+    width: 100%;
+    height: auto;
+  }
+</style>

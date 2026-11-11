@@ -1,0 +1,28 @@
+---
+/**
+ * A real app screenshot from src/assets/screens/<name>.webp. DevMark itself has one light
+ * appearance, so the same image stands in both page themes. Width and height come from the file.
+ */
+interface Props {
+  name: string;
+  alt: string;
+}
+
+const { name, alt } = Astro.props;
+const files = import.meta.glob<{ default: ImageMetadata }>('../assets/screens/*.webp', {
+  eager: true,
+});
+const image = files[`../assets/screens/${name}.webp`]?.default;
+if (!image) throw new Error(`missing screenshot: ${name}`);
+---
+
+<img src={image.src} width={image.width} height={image.height} alt={alt} decoding="async" />
+
+<style>
+  img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 10px;
+  }
+</style>

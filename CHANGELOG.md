@@ -13,6 +13,7 @@ Alle nennenswerten Änderungen an DevMark stehen hier. DevMark folgt
 - **Notizen:** Menü Notizen → „Notiz im Workspace speichern …“ legt die aktive Notiz als Markdown-Datei im Workspace ab, „Notizordner im Finder zeigen“ und „Notizordner wählen …“ führen zum bzw. wechseln den Ordner.
 - **Workspace:** Umschalter oben in der Navigation mit Ordnername, zuletzt geöffneten Workspaces und „Ordner öffnen …“; Menü Datei → „Workspace öffnen …“.
 - **Oberfläche:** Ansicht → „Liste ein/aus“ (Cmd/Ctrl-Shift-L) blendet die mittlere Spalte aus, „Fokusmodus“ (Cmd/Ctrl-Shift-Enter) zeigt nur den Text.
+- **Doku:** Projektseite mit Dokumentation unter [casoon.github.io/devmark](https://casoon.github.io/devmark/) – Installation, Anleitungen zu Schreiben, Druck, Notizen und Abgleich, Referenz der Tastenkürzel und von `devmark-typst`.
 
 ### Changed
 
