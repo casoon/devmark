@@ -11,16 +11,22 @@ use std::path::{Path, PathBuf};
 use pulldown_cmark::{CowStr, Event, Parser, Tag, TagEnd, html};
 
 use crate::Warning;
+use crate::frontmatter::Metadata;
 use crate::markdown::{
-    HtmlToken, admonition_kind, callout_kind, callout_label, normalize, parser_options,
-    percent_decode, plain_text, preprocess_directives, preprocess_mdx, slugify, split_frontmatter,
-    tokenize_html,
+    HtmlToken, admonition_kind, callout_kind, callout_label, contrast_on_white, normalize,
+    parse_hex_color, parser_options, percent_decode, plain_text, preprocess_directives,
+    preprocess_mdx, slugify, split_frontmatter, tokenize_html,
 };
 
 /// Name des gemeinsamen Stylesheets in der Ausgabewurzel.
 pub const STYLESHEET: &str = "style.css";
 /// Erste Zeile des Stylesheets – kennzeichnet einen Ordner als DevMark-Export.
 const STYLESHEET_MARKER: &str = "/* DevMark HTML-Export */";
+/// Einstellungen eines Ordner-Exports, relativ zur Exportwurzel (TOML: `title`, `lang`,
+/// `accent`, `base_url`).
+pub const SETTINGS_FILE: &str = ".devmark/export.toml";
+/// Länge, auf die eine aus dem ersten Absatz gewonnene Beschreibung gekürzt wird.
+const DESCRIPTION_LEN: usize = 160;
 
 pub struct PageOptions<'a> {
     /// Quelldatei (absolut); relative Links und Bilder werden zu ihrem Ordner aufgelöst.
@@ -32,6 +38,8 @@ pub struct PageOptions<'a> {
     pub pages: &'a HashSet<PathBuf>,
     /// Kopfzeile mit Link auf die Übersicht `index.html`.
     pub with_index: bool,
+    /// Vorgaben des Exports; das Frontmatter der Seite geht vor.
+    pub site: &'a Metadata,
 }
 
 pub struct Page {
@@ -40,6 +48,15 @@ pub struct Page {
     pub warnings: Vec<Warning>,
     /// Lokale Bilder und Dateien, die neben die Seiten kopiert werden müssen.
     pub assets: Vec<Asset>,
+    /// Inhalt von `<main>`.
+    content: String,
+    lang: String,
+    /// `description`/`subtitle` aus dem Frontmatter, sonst der Anfang des ersten Absatzes.
+    description: Option<String>,
+    /// Akzentfarbe als `#rrggbb`.
+    accent: Option<String>,
+    /// Ordnertiefe der Seite unter der Exportwurzel.
+    depth: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -64,12 +81,7 @@ pub fn markdown_to_html(source: &str, options: &PageOptions) -> Page {
         body.to_string()
     };
     let (body, _) = preprocess_directives(&body);
-    let lang = metadata
-        .lang
-        .as_deref()
-        .and_then(|lang| lang.split(['-', '_']).next())
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_else(|| "de".into());
+    let lang = page_lang(metadata.lang.as_deref().or(options.site.lang.as_deref()));
 
     let events: Vec<Event> = Parser::new_ext(&body, parser_options()).collect();
     let page_dir = options
@@ -93,6 +105,15 @@ pub fn markdown_to_html(source: &str, options: &PageOptions) -> Page {
         skipping: None,
     };
     let (events, first_h1) = writer.rewrite(events);
+    let description = metadata
+        .subtitle
+        .clone()
+        .or_else(|| first_paragraph(&events));
+    let accent = metadata
+        .accent
+        .as_deref()
+        .or(options.site.accent.as_deref())
+        .and_then(|value| writer.accent(value));
 
     let mut content = String::new();
     if first_h1.is_none()
@@ -107,27 +128,114 @@ pub fn markdown_to_html(source: &str, options: &PageOptions) -> Page {
         .clone()
         .or(first_h1)
         .unwrap_or_else(|| file_stem(options.path));
-    let prefix = "../".repeat(writer.rel_dir.components().count());
+    let mut page = Page {
+        title,
+        html: String::new(),
+        warnings: writer.warnings,
+        assets: writer.assets,
+        content,
+        lang,
+        description,
+        accent,
+        depth: writer.rel_dir.components().count(),
+    };
     let nav = if options.with_index {
-        let label = if writer.german {
-            "Übersicht"
-        } else {
-            "Overview"
-        };
-        format!("<nav><a href=\"{prefix}index.html\">{label}</a></nav>\n")
+        index_link(&page)
     } else {
         String::new()
     };
-    let html = format!(
-        "<!doctype html>\n<html lang=\"{lang}\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<meta name=\"generator\" content=\"DevMark\">\n<title>{}</title>\n<link rel=\"stylesheet\" href=\"{prefix}{STYLESHEET}\">\n</head>\n<body>\n{nav}<main>\n{content}</main>\n</body>\n</html>\n",
-        escape(&title)
-    );
-    Page {
-        title,
-        html,
-        warnings: writer.warnings,
-        assets: writer.assets,
+    page.html = document(&page, &nav, None);
+    page
+}
+
+fn page_lang(lang: Option<&str>) -> String {
+    lang.and_then(|lang| lang.split(['-', '_']).next())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| "de".into())
+}
+
+/// Anfang des ersten Absatzes als Beschreibung, an einer Wortgrenze gekürzt.
+fn first_paragraph(events: &[Event]) -> Option<String> {
+    let start = events
+        .iter()
+        .position(|e| matches!(e, Event::Start(Tag::Paragraph)))?;
+    let end = events[start..]
+        .iter()
+        .position(|e| matches!(e, Event::End(TagEnd::Paragraph)))?;
+    let text = plain_text(&events[start..start + end]);
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return None;
     }
+    if text.chars().count() <= DESCRIPTION_LEN {
+        return Some(text);
+    }
+    let cut: String = text.chars().take(DESCRIPTION_LEN).collect();
+    let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head);
+    Some(format!("{}…", cut.trim_end_matches([',', ';', ':', '.'])))
+}
+
+fn is_german(lang: &str) -> bool {
+    lang == "de"
+}
+
+/// Kopfzeile einer Seite mit Link zurück zur Übersicht.
+fn index_link(page: &Page) -> String {
+    let label = if is_german(&page.lang) {
+        "Übersicht"
+    } else {
+        "Overview"
+    };
+    format!(
+        "<nav class=\"top\"><a href=\"{}index.html\">{label}</a></nav>\n",
+        "../".repeat(page.depth)
+    )
+}
+
+/// Vollständige HTML-Datei. `url`: öffentliche Adresse der Seite (mit `base_url`).
+fn document(page: &Page, nav: &str, url: Option<&str>) -> String {
+    let prefix = "../".repeat(page.depth);
+    let title = escape(&page.title);
+    let mut head = String::new();
+    if let Some(description) = &page.description {
+        head.push_str(&format!(
+            "<meta name=\"description\" content=\"{}\">\n",
+            escape(description)
+        ));
+    }
+    if let Some(url) = url {
+        head.push_str(&format!(
+            "<link rel=\"canonical\" href=\"{url}\">\n<meta property=\"og:type\" content=\"article\">\n<meta property=\"og:url\" content=\"{url}\">\n<meta property=\"og:title\" content=\"{title}\">\n"
+        ));
+        if let Some(description) = &page.description {
+            head.push_str(&format!(
+                "<meta property=\"og:description\" content=\"{}\">\n",
+                escape(description)
+            ));
+        }
+    }
+    if let Some(accent) = &page.accent {
+        head.push_str(&format!("<style>:root {{ --brand: {accent}; }}</style>\n"));
+    }
+    // The page navigation follows the text, so it comes after it for keyboard and screen
+    // readers; the stylesheet places it as a sidebar on wide screens.
+    let jump;
+    let (layout, top, bottom) = if nav.contains("class=\"site\"") {
+        let label = if is_german(&page.lang) {
+            "Alle Seiten ↓"
+        } else {
+            "All pages ↓"
+        };
+        jump = format!("<nav class=\"top jump\"><a href=\"#pages\">{label}</a></nav>\n");
+        (" class=\"with-nav\"", jump.as_str(), nav)
+    } else {
+        ("", nav, "")
+    };
+    format!(
+        "<!doctype html>\n<html lang=\"{lang}\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<meta name=\"generator\" content=\"DevMark\">\n<title>{title}</title>\n{head}<link rel=\"stylesheet\" href=\"{prefix}{STYLESHEET}\">\n</head>\n<body{layout}>\n{top}<main>\n{content}</main>\n{bottom}</body>\n</html>\n",
+        lang = page.lang,
+        content = page.content,
+    )
 }
 
 /// Ergebnis eines Exports.
@@ -184,10 +292,16 @@ fn export(
     });
     let with_index = sources.len() > 1 && !has_index;
 
+    let site = read_settings(&root);
+    let base_url = site
+        .base_url
+        .as_deref()
+        .map(|url| format!("{}/", url.trim().trim_end_matches('/')));
+
     std::fs::create_dir_all(out_dir)?;
     let mut warnings = Vec::new();
     let mut copied = HashSet::new();
-    let mut entries = Vec::new();
+    let mut rendered = Vec::new();
     for source in &sources {
         let text = read(source)?;
         let page = markdown_to_html(
@@ -197,6 +311,7 @@ fn export(
                 root: &root,
                 pages: &pages,
                 with_index,
+                site: &site,
             },
         );
         let rel = source
@@ -204,11 +319,34 @@ fn export(
             .map(Path::to_path_buf)
             .unwrap_or_else(|_| PathBuf::from(source.file_name().unwrap_or_default()))
             .with_extension("html");
+        rendered.push((source.clone(), rel, page));
+    }
+
+    let entries: Vec<(PathBuf, String)> = rendered
+        .iter()
+        .map(|(_, rel, page)| (rel.clone(), page.title.clone()))
+        .collect();
+    let site_title = site.title.clone().unwrap_or_else(|| {
+        root.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default()
+    });
+    let multi = entries.len() > 1;
+    for (source, rel, page) in rendered {
+        let html = if multi {
+            let nav = site_nav(&page, rel.as_path(), &site_title, &entries);
+            let url = base_url
+                .as_ref()
+                .map(|base| format!("{base}{}", encode_path(&rel)));
+            document(&page, &nav, url.as_deref())
+        } else {
+            page.html.clone()
+        };
         let target = out_dir.join(&rel);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&target, &page.html)?;
+        std::fs::write(&target, html)?;
         for asset in page.assets {
             if copied.insert(asset.target.clone()) {
                 let target = out_dir.join(&asset.target);
@@ -219,17 +357,21 @@ fn export(
             }
         }
         warnings.extend(page.warnings.into_iter().map(|w| (source.clone(), w)));
-        entries.push((rel, page.title));
     }
     std::fs::write(out_dir.join(STYLESHEET), stylesheet())?;
-    let entry = if with_index {
-        let title = root
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        std::fs::write(out_dir.join("index.html"), index_page(&title, &entries))?;
-        out_dir.join("index.html")
-    } else if has_index {
+    if with_index {
+        std::fs::write(
+            out_dir.join("index.html"),
+            index_page(&site_title, &site, &entries, base_url.as_deref()),
+        )?;
+    }
+    if let Some(base) = &base_url {
+        std::fs::write(
+            out_dir.join("sitemap.xml"),
+            sitemap(base, &entries, with_index),
+        )?;
+    }
+    let entry = if with_index || has_index {
         out_dir.join("index.html")
     } else {
         out_dir.join(
@@ -244,6 +386,95 @@ fn export(
         warnings,
         entry,
     })
+}
+
+/// Liest `.devmark/export.toml` der Exportwurzel; fehlt die Datei, gelten die Vorgaben.
+fn read_settings(root: &Path) -> Metadata {
+    std::fs::read_to_string(root.join(SETTINGS_FILE))
+        .map(|text| Metadata::parse_toml(&text))
+        .unwrap_or_default()
+}
+
+/// Navigation über alle Seiten, nach Ordnern gruppiert; die aktuelle Seite ist markiert.
+fn site_nav(
+    page: &Page,
+    current: &Path,
+    site_title: &str,
+    entries: &[(PathBuf, String)],
+) -> String {
+    let prefix = "../".repeat(page.depth);
+    let german = is_german(&page.lang);
+    let label = if german { "Seiten" } else { "Pages" };
+    let mut out = format!(
+        "<nav class=\"site\" id=\"pages\" aria-label=\"{label}\">\n<p class=\"site-title\"><a href=\"{prefix}index.html\">{}</a></p>\n",
+        escape(site_title)
+    );
+    for (dir, pages) in grouped(entries) {
+        if !dir.as_os_str().is_empty() {
+            out.push_str(&format!(
+                "<p class=\"group\">{}</p>\n",
+                escape(&folder_label(&dir))
+            ));
+        }
+        out.push_str("<ul>\n");
+        for (rel, title) in pages {
+            let current = if rel.as_path() == current {
+                " aria-current=\"page\""
+            } else {
+                ""
+            };
+            out.push_str(&format!(
+                "<li><a href=\"{prefix}{}\"{current}>{}</a></li>\n",
+                encode_path(rel),
+                escape(title)
+            ));
+        }
+        out.push_str("</ul>\n");
+    }
+    out.push_str("</nav>\n");
+    out
+}
+
+/// Seiten nach Ordner, Ordner und Titel alphabetisch.
+fn grouped(entries: &[(PathBuf, String)]) -> BTreeMap<PathBuf, Vec<(&PathBuf, &String)>> {
+    let mut groups: BTreeMap<PathBuf, Vec<(&PathBuf, &String)>> = BTreeMap::new();
+    for (rel, title) in entries {
+        let dir = rel.parent().map(Path::to_path_buf).unwrap_or_default();
+        groups.entry(dir).or_default().push((rel, title));
+    }
+    for pages in groups.values_mut() {
+        pages.sort_by_key(|(_, title)| title.to_lowercase());
+    }
+    groups
+}
+
+fn folder_label(dir: &Path) -> String {
+    dir.components()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+/// `sitemap.xml` mit allen Seiten (und der Übersicht) unter `base`.
+fn sitemap(base: &str, entries: &[(PathBuf, String)], with_index: bool) -> String {
+    let mut out = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n",
+    );
+    if with_index {
+        out.push_str(&format!(
+            "  <url><loc>{}index.html</loc></url>\n",
+            escape(base)
+        ));
+    }
+    for (rel, _) in entries {
+        out.push_str(&format!(
+            "  <url><loc>{}{}</loc></url>\n",
+            escape(base),
+            encode_path(rel)
+        ));
+    }
+    out.push_str("</urlset>\n");
+    out
 }
 
 /// Alle Markdown-Dateien unterhalb von `root`, sortiert; versteckte Dateien und Ordner
@@ -384,6 +615,28 @@ impl Writer<'_> {
             }
         }
         (out, first_h1)
+    }
+
+    /// Prüft eine Akzentfarbe; ungültige fallen mit Hinweis weg.
+    fn accent(&mut self, value: &str) -> Option<String> {
+        let Some(rgb) = parse_hex_color(value) else {
+            self.warn_once(
+                "accent",
+                format!(
+                    "Akzentfarbe „{value}“ nicht erkannt (erwartet z. B. \"#0a7f6f\") – ignoriert."
+                ),
+            );
+            return None;
+        };
+        let contrast = contrast_on_white(rgb);
+        if contrast < 4.5 {
+            let ratio = format!("{contrast:.1}").replace('.', ",");
+            self.warn_once(
+                "accent",
+                format!("Akzentfarbe „{value}“ hat zu wenig Kontrast zu Weiß ({ratio}:1, nötig sind 4,5:1)."),
+            );
+        }
+        Some(format!("#{:02x}{:02x}{:02x}", rgb.0, rgb.1, rgb.2))
     }
 
     fn math_warning(&mut self) {
@@ -650,37 +903,44 @@ fn encode_path(path: &Path) -> String {
 }
 
 /// Übersicht: Seiten nach Ordnern gruppiert.
-fn index_page(title: &str, entries: &[(PathBuf, String)]) -> String {
-    let mut groups: BTreeMap<PathBuf, Vec<(&PathBuf, &String)>> = BTreeMap::new();
-    for (rel, page_title) in entries {
-        let dir = rel.parent().map(Path::to_path_buf).unwrap_or_default();
-        groups.entry(dir).or_default().push((rel, page_title));
-    }
-    let mut body = format!("<h1>{}</h1>\n", escape(title));
-    for (dir, mut pages) in groups {
-        pages.sort_by_key(|(_, title)| title.to_lowercase());
+fn index_page(
+    title: &str,
+    site: &Metadata,
+    entries: &[(PathBuf, String)],
+    base_url: Option<&str>,
+) -> String {
+    let mut content = format!("<h1>{}</h1>\n", escape(title));
+    for (dir, pages) in grouped(entries) {
         if !dir.as_os_str().is_empty() {
-            let name = dir
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy().to_string())
-                .collect::<Vec<_>>()
-                .join(" / ");
-            body.push_str(&format!("<h2>{}</h2>\n", escape(&name)));
+            content.push_str(&format!("<h2>{}</h2>\n", escape(&folder_label(&dir))));
         }
-        body.push_str("<ul class=\"pages\">\n");
+        content.push_str("<ul class=\"pages\">\n");
         for (rel, page_title) in pages {
-            body.push_str(&format!(
+            content.push_str(&format!(
                 "<li><a href=\"{}\">{}</a></li>\n",
                 encode_path(rel),
                 escape(page_title)
             ));
         }
-        body.push_str("</ul>\n");
+        content.push_str("</ul>\n");
     }
-    format!(
-        "<!doctype html>\n<html lang=\"de\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<meta name=\"generator\" content=\"DevMark\">\n<title>{}</title>\n<link rel=\"stylesheet\" href=\"{STYLESHEET}\">\n</head>\n<body>\n<main>\n{body}</main>\n</body>\n</html>\n",
-        escape(title)
-    )
+    let page = Page {
+        title: title.to_string(),
+        html: String::new(),
+        warnings: Vec::new(),
+        assets: Vec::new(),
+        content,
+        lang: page_lang(site.lang.as_deref()),
+        description: site.subtitle.clone(),
+        accent: site
+            .accent
+            .as_deref()
+            .and_then(parse_hex_color)
+            .map(|(r, g, b)| format!("#{r:02x}{g:02x}{b:02x}")),
+        depth: 0,
+    };
+    let url = base_url.map(|base| format!("{base}index.html"));
+    document(&page, "", url.as_deref())
 }
 
 /// Stylesheet in den Farben der PDF-Vorlage.
@@ -702,8 +962,47 @@ mod tests {
                 root,
                 pages: &pages,
                 with_index: true,
+                site: &Metadata::default(),
             },
         )
+    }
+
+    #[test]
+    fn accent_and_description() {
+        let page = page(
+            "---\naccent: \"#0F766E\"\n---\n# Titel\n\nErster Absatz mit **fettem** Text.\n\nZweiter.\n",
+            &[],
+        );
+        assert!(
+            page.html
+                .contains("<style>:root { --brand: #0f766e; }</style>")
+        );
+        assert!(
+            page.html
+                .contains("<meta name=\"description\" content=\"Erster Absatz mit fettem Text.\">"),
+            "{}",
+            page.html
+        );
+        assert!(page.warnings.is_empty());
+
+        let page = super::tests::page(
+            "---\naccent: \"#ffd700\"\ndescription: Kurz\n---\nText\n",
+            &[],
+        );
+        assert!(page.html.contains("content=\"Kurz\""));
+        assert!(page.warnings[0].message.contains("Kontrast"));
+        let page = super::tests::page("---\naccent: blau\n---\nText\n", &[]);
+        assert!(!page.html.contains("--brand"));
+        assert!(page.warnings[0].message.contains("nicht erkannt"));
+    }
+
+    #[test]
+    fn long_description_is_cut_at_a_word() {
+        let text = "Wort ".repeat(60);
+        let description =
+            first_paragraph(&Parser::new_ext(&text, parser_options()).collect::<Vec<_>>()).unwrap();
+        assert!(description.ends_with("Wort…"), "{description}");
+        assert!(description.chars().count() <= DESCRIPTION_LEN + 1);
     }
 
     #[test]
@@ -796,6 +1095,13 @@ mod tests {
         .unwrap();
         std::fs::write(src.join(".trash/alt.md"), "# Alt\n").unwrap();
 
+        std::fs::create_dir_all(src.join(".devmark")).unwrap();
+        std::fs::write(
+            src.join(SETTINGS_FILE),
+            "title = \"Handbuch\"\nbase_url = \"https://example.com/notes\"\naccent = \"#0f766e\"\n",
+        )
+        .unwrap();
+
         let out = dir.join("Export");
         let sources = collect_markdown(&src);
         assert_eq!(sources.len(), 2);
@@ -807,10 +1113,27 @@ mod tests {
         let plan = std::fs::read_to_string(out.join("Projekt/plan.html")).unwrap();
         assert!(plan.contains("href=\"../Erste%20Notiz.html\""));
         assert!(plan.contains("href=\"../style.css\""));
+        // Navigation über alle Seiten, aktuelle Seite markiert, nach dem Text.
+        assert!(plan.contains("<body class=\"with-nav\">"));
+        assert!(
+            plan.contains("<a href=\"../index.html\">Handbuch</a>"),
+            "{plan}"
+        );
+        assert!(plan.contains("<a href=\"../Projekt/plan.html\" aria-current=\"page\">Plan</a>"));
+        assert!(plan.contains("<a href=\"../Erste%20Notiz.html\">Erste</a>"));
+        assert!(plan.find("</main>") < plan.find("<nav class=\"site\""));
+        assert!(plan.contains(
+            "<link rel=\"canonical\" href=\"https://example.com/notes/Projekt/plan.html\">"
+        ));
+        assert!(plan.contains("--brand: #0f766e"));
+        let sitemap = std::fs::read_to_string(out.join("sitemap.xml")).unwrap();
+        assert!(sitemap.contains("<loc>https://example.com/notes/index.html</loc>"));
+        assert!(sitemap.contains("<loc>https://example.com/notes/Erste%20Notiz.html</loc>"));
         assert!(out.join("bild.png").is_file());
         let index = std::fs::read_to_string(out.join("index.html")).unwrap();
         assert!(index.contains("<a href=\"Erste%20Notiz.html\">Erste</a>"));
         assert!(index.contains("<h2>Projekt</h2>"));
+        assert!(index.contains("<h1>Handbuch</h1>"));
         assert!(!out.join(".trash").exists());
         assert!(
             std::fs::read_to_string(out.join(STYLESHEET))

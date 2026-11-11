@@ -42,11 +42,26 @@ accent: "#0a7f6f"
 | `toc` | Table of contents at the start |
 | `numbering` | Numbered headings |
 | `paper` | Paper size, e.g. `a4` |
-| `accent` | Colour for headings, links, callouts and table headers; a warning appears if it has too little contrast on white paper |
+| `accent` | Colour for headings, links, callouts and table headers in the PDF and the HTML export; a warning appears if it has too little contrast on white |
 
 ## Export as HTML
 
-Datei → “Als HTML exportieren …“ (export as HTML) writes the current document as a static page, Notizen → “Notizordner als HTML exportieren …“ (export notes folder as HTML) the whole notes folder. Each Markdown file becomes one `.html` file, all sharing one stylesheet; there is no JavaScript and nothing loads from the network. Links between notes become relative `.html` links, folders stay folders, and callouts look as they do in the PDF. With more than one page, an `index.html` lists them all. The result can go to any static host as it is.
+Datei → “Als HTML exportieren …“ (export as HTML) writes the current document as a static page, Notizen → “Notizordner als HTML exportieren …“ (export notes folder as HTML) the whole notes folder. Each Markdown file becomes one `.html` file, all sharing one stylesheet; there is no JavaScript and nothing loads from the network. Links between notes become relative `.html` links, folders stay folders, and callouts look as they do in the PDF. With more than one page, an `index.html` lists them all, and every page gets a navigation over all pages – a sidebar on wide screens, below the text on narrow ones. The result can go to any static host as it is.
+
+The pages follow the reader's light or dark mode. `accent` from the frontmatter colours headings, links, callouts and table headers, as in the PDF; in dark mode a lighter shade of it is used. Each page gets a `description` for search engines: the `description` from the frontmatter, otherwise the start of its first paragraph.
+
+### Settings for a folder
+
+An optional file `.devmark/export.toml` in the exported folder sets defaults for all pages:
+
+```toml
+title = "Project handbook"   # heading of index.html and the navigation
+lang = "en"                  # page language, unless a page sets its own
+accent = "#0f766e"           # accent colour, unless a page sets its own
+base_url = "https://example.com/handbook/"
+```
+
+With `base_url`, the export also writes a `sitemap.xml` and gives every page its public address as canonical link and for link previews (`og:url`, `og:title`, `og:description`).
 
 ## What Markdown supports
 

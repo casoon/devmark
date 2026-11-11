@@ -17,6 +17,9 @@ pub struct Metadata {
     pub paper: Option<String>,
     /// Akzentfarbe für Überschriften, Links, Hinweisboxen und Tabellenkopf (`#rrggbb`).
     pub accent: Option<String>,
+    /// Öffentliche Adresse eines HTML-Exports (`https://example.com/notes/`), für Sitemap und
+    /// kanonische Links.
+    pub base_url: Option<String>,
 }
 
 impl Metadata {
@@ -48,6 +51,7 @@ impl Metadata {
                 }
                 "paper" | "papersize" => meta.paper = value.scalar(),
                 "accent" | "accent-color" | "accent_color" => meta.accent = value.scalar(),
+                "base_url" | "base-url" | "baseurl" => meta.base_url = value.scalar(),
                 _ => {}
             }
         }

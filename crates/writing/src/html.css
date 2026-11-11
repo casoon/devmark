@@ -1,10 +1,14 @@
 :root {
+  color-scheme: light dark;
+  /* --brand: set per page from `accent` in the frontmatter or .devmark/export.toml */
+  --bg: #fff;
   --text: #1f1f1f;
   --muted: #6b6b6b;
   --rule: #bebebe;
-  --link: #1a5fb4;
+  --heading: var(--brand, var(--text));
+  --link: var(--brand, #1a5fb4);
   --code-bg: #f4f3f1;
-  --note: #0969da;
+  --note: var(--brand, #0969da);
   --tip: #1a7f37;
   --important: #8250df;
   --warning: #9a6700;
@@ -12,11 +16,30 @@
   --details: #6e6e6e;
 }
 
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #171615;
+    --text: #e4e1dc;
+    --muted: #a19d96;
+    --rule: #4a4743;
+    /* Lighter variant of the accent, so it keeps its contrast on the dark ground. */
+    --heading: color-mix(in srgb, var(--brand, var(--text)) 55%, #fff);
+    --link: color-mix(in srgb, var(--brand, #1a5fb4) 50%, #fff);
+    --code-bg: #24221f;
+    --note: color-mix(in srgb, var(--brand, #0969da) 50%, #fff);
+    --tip: #57c27a;
+    --important: #b892f0;
+    --warning: #d9a93d;
+    --caution: #f07b74;
+    --details: #a19d96;
+  }
+}
+
 * { box-sizing: border-box; }
 
 body {
   margin: 0;
-  background: #fff;
+  background: var(--bg);
   color: var(--text);
   font-family: Charter, "Iowan Old Style", Georgia, "Libertinus Serif", serif;
   font-size: 18px;
@@ -24,7 +47,7 @@ body {
   hyphens: auto;
 }
 
-nav {
+nav.top {
   max-width: 44rem;
   margin: 0 auto;
   padding: 1rem 1.25rem 0;
@@ -38,7 +61,7 @@ main {
   padding: 1.5rem 1.25rem 4rem;
 }
 
-h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 2rem 0 0.75rem; }
+h1, h2, h3, h4, h5, h6 { color: var(--heading); line-height: 1.25; margin: 2rem 0 0.75rem; }
 h1 { font-size: 2rem; margin-top: 0.5rem; }
 h2 { font-size: 1.45rem; }
 h3 { font-size: 1.2rem; }
@@ -52,7 +75,7 @@ code, pre, kbd {
   font-family: "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
   font-size: 0.85em;
 }
-code { background: var(--code-bg); padding: 0.1em 0.3em; border-radius: 3px; }
+code { hyphens: none; background: var(--code-bg); padding: 0.1em 0.3em; border-radius: 3px; }
 pre { background: var(--code-bg); padding: 0.8rem 1rem; border-radius: 4px; overflow-x: auto; line-height: 1.45; }
 pre code { background: none; padding: 0; }
 .math-block { display: block; text-align: center; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.85em; margin: 1rem 0; }
@@ -61,7 +84,7 @@ blockquote { margin: 1rem 0; padding-left: 1rem; border-left: 3px solid var(--ru
 
 table { border-collapse: collapse; margin: 1rem 0; display: block; overflow-x: auto; }
 th, td { border: 1px solid var(--rule); padding: 0.35rem 0.6rem; text-align: left; }
-th { font-weight: bold; }
+th { font-weight: bold; color: var(--heading); background: color-mix(in srgb, var(--heading) 8%, var(--bg)); }
 
 hr { border: none; border-top: 1px solid var(--rule); margin: 2rem 0; }
 
@@ -71,7 +94,7 @@ hr { border: none; border-top: 1px solid var(--rule); margin: 2rem 0; }
   padding: 0.75rem 1rem 0.75rem 1rem;
   border-left: 3px solid var(--accent);
   border-radius: 0 3px 3px 0;
-  background: color-mix(in srgb, var(--accent) 7%, white);
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg));
 }
 .callout > :first-child { margin-top: 0; }
 .callout > :last-child { margin-bottom: 0; }
@@ -86,7 +109,7 @@ details {
   margin: 1.25rem 0;
   padding: 0.75rem 1rem;
   border-left: 3px solid var(--details);
-  background: color-mix(in srgb, var(--details) 7%, white);
+  background: color-mix(in srgb, var(--details) 9%, var(--bg));
 }
 summary { font-weight: bold; cursor: pointer; }
 
@@ -95,7 +118,32 @@ summary { font-weight: bold; cursor: pointer; }
 
 ul.pages { padding-left: 1.25rem; }
 
+/* Navigation over all pages: a sidebar on wide screens, below the text on narrow ones. */
+nav.site {
+  font-family: system-ui, sans-serif;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  padding: 1.5rem 1.25rem;
+}
+nav.site ul { list-style: none; margin: 0 0 1rem; padding: 0; }
+nav.site li { margin: 0.15rem 0; }
+nav.site a { color: var(--text); text-decoration: none; display: block; padding: 0.2rem 0.5rem; border-radius: 4px; }
+nav.site a:hover { background: var(--code-bg); }
+nav.site a[aria-current="page"] { color: var(--link); background: color-mix(in srgb, var(--link) 12%, var(--bg)); font-weight: 600; }
+nav.site .site-title { margin: 0 0 1rem; font-weight: 700; }
+nav.site .site-title a { color: var(--heading); padding-left: 0.5rem; }
+nav.site .group { margin: 1rem 0 0.3rem; padding-left: 0.5rem; color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+
+body.with-nav nav.site { border-top: 1px solid var(--rule); }
+@media (min-width: 60rem) {
+  body.with-nav nav.jump { display: none; }
+  body.with-nav { display: grid; grid-template-columns: 16rem minmax(0, 1fr); align-items: start; }
+  body.with-nav main { grid-column: 2; grid-row: 1; margin: 0 auto; width: 100%; }
+  body.with-nav nav.site { grid-column: 1; grid-row: 1; position: sticky; top: 0; max-height: 100vh; overflow-y: auto; border-top: none; border-right: 1px solid var(--rule); }
+}
+
 @media print {
   nav { display: none; }
+  body.with-nav { display: block; }
   main { max-width: none; padding: 0; }
 }

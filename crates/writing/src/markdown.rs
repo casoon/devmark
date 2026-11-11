@@ -1894,7 +1894,7 @@ pub(crate) fn callout_kind(kind: BlockQuoteKind) -> &'static str {
 }
 
 /// `#rgb` oder `#rrggbb` (das `#` darf fehlen) → RGB.
-fn parse_hex_color(value: &str) -> Option<(u8, u8, u8)> {
+pub(crate) fn parse_hex_color(value: &str) -> Option<(u8, u8, u8)> {
     let hex = value.trim().trim_start_matches('#');
     if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
         return None;
@@ -1915,7 +1915,7 @@ fn parse_hex_color(value: &str) -> Option<(u8, u8, u8)> {
 }
 
 /// Kontrastverhältnis (WCAG) einer Farbe zu Weiß, 1 bis 21.
-fn contrast_on_white((r, g, b): (u8, u8, u8)) -> f64 {
+pub(crate) fn contrast_on_white((r, g, b): (u8, u8, u8)) -> f64 {
     let linear = |c: u8| {
         let c = f64::from(c) / 255.0;
         if c <= 0.039_28 {
