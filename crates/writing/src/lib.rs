@@ -1,8 +1,9 @@
-//! Schreib-Werkzeuge ohne UI-Abhängigkeit: Markdown/MDX → Typst, Typst → PDF,
+//! Schreib-Werkzeuge ohne UI-Abhängigkeit: Markdown/MDX → Typst, Typst → PDF, Markdown → HTML,
 //! Formatieraktionen und Dokumentvorlagen.
 
 pub mod authoring;
 pub mod frontmatter;
+pub mod html;
 pub mod markdown;
 pub mod math;
 pub mod pdf;

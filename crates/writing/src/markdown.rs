@@ -123,7 +123,7 @@ pub fn markdown_to_typst(source: &str, options: &Options) -> Conversion {
 // ---------------------------------------------------------------------------
 // Frontmatter und MDX-Vorverarbeitung
 
-fn split_frontmatter(source: &str) -> (Metadata, &str) {
+pub(crate) fn split_frontmatter(source: &str) -> (Metadata, &str) {
     for (fence, parse) in [
         ("---", Metadata::parse_yaml as fn(&str) -> Metadata),
         ("+++", Metadata::parse_toml),
@@ -161,7 +161,7 @@ fn push_tracked(out: &mut String, origins: &mut Vec<usize>, text: &str, origin: 
     }
 }
 
-fn preprocess_mdx(body: &str, warnings: &mut Vec<Warning>) -> (String, Vec<usize>) {
+pub(crate) fn preprocess_mdx(body: &str, warnings: &mut Vec<Warning>) -> (String, Vec<usize>) {
     let mut out = String::with_capacity(body.len());
     let mut origins = Vec::new();
     let mut fence: Option<String> = None;
@@ -364,7 +364,7 @@ fn preprocess_mdx(body: &str, warnings: &mut Vec<Warning>) -> (String, Vec<usize
 
 /// Container-Direktiven (Docusaurus, VitePress, Starlight): `:::tip Titel` … `:::`
 /// → `<Callout>`, das der Renderer als Hinweisbox setzt.
-fn preprocess_directives(body: &str) -> (String, Vec<usize>) {
+pub(crate) fn preprocess_directives(body: &str) -> (String, Vec<usize>) {
     let mut out = String::with_capacity(body.len());
     let mut origins = Vec::new();
     let mut fence: Option<String> = None;
@@ -478,7 +478,7 @@ fn matching_brace(chars: &[char]) -> Option<usize> {
 // ---------------------------------------------------------------------------
 // Renderer
 
-fn parser_options() -> pulldown_cmark::Options {
+pub(crate) fn parser_options() -> pulldown_cmark::Options {
     use pulldown_cmark::Options as O;
     O::ENABLE_TABLES
         | O::ENABLE_FOOTNOTES
@@ -1590,11 +1590,14 @@ impl<'a> Renderer<'a> {
 
         let mut helpers = String::new();
         if self.needs.contains("callout") {
-            let (note, tip, important, warning, caution) = if german {
-                ("Hinweis", "Tipp", "Wichtig", "Warnung", "Vorsicht")
-            } else {
-                ("Note", "Tip", "Important", "Warning", "Caution")
-            };
+            let label = |kind| callout_label(kind, german).unwrap_or_default();
+            let (note, tip, important, warning, caution) = (
+                label("note"),
+                label("tip"),
+                label("important"),
+                label("warning"),
+                label("caution"),
+            );
             helpers.push_str(&format!(
                 "#let callout(kind: \"note\", title: none, body) = {{\n  let styles = (\n    note: (rgb(\"#0969da\"), [{note}]),\n    tip: (rgb(\"#1a7f37\"), [{tip}]),\n    important: (rgb(\"#8250df\"), [{important}]),\n    warning: (rgb(\"#9a6700\"), [{warning}]),\n    caution: (rgb(\"#cf222e\"), [{caution}]),\n    details: (luma(110), none),\n  )\n  let (accent, label) = styles.at(kind, default: styles.note)\n  let heading = if title != none {{ title }} else {{ label }}\n  block(\n    width: 100%,\n    inset: (left: 12pt, rest: 10pt),\n    stroke: (left: 3pt + accent),\n    fill: accent.lighten(93%),\n    radius: (right: 3pt),\n    {{\n      if heading != none {{ text(weight: \"bold\", fill: accent, heading); parbreak() }}\n      body\n    }},\n  )\n}}\n"
             ));
@@ -1820,7 +1823,7 @@ fn longest_run(text: &str, ch: char) -> usize {
     best
 }
 
-fn plain_text(events: &[Event]) -> String {
+pub(crate) fn plain_text(events: &[Event]) -> String {
     let mut out = String::new();
     for event in events {
         match event {
@@ -1832,7 +1835,7 @@ fn plain_text(events: &[Event]) -> String {
     out
 }
 
-fn callout_kind(kind: BlockQuoteKind) -> &'static str {
+pub(crate) fn callout_kind(kind: BlockQuoteKind) -> &'static str {
     match kind {
         BlockQuoteKind::Note => "note",
         BlockQuoteKind::Tip => "tip",
@@ -1842,8 +1845,25 @@ fn callout_kind(kind: BlockQuoteKind) -> &'static str {
     }
 }
 
+/// Überschrift einer Hinweisbox ohne eigenen Titel; `details` hat keine.
+pub(crate) fn callout_label(kind: &str, german: bool) -> Option<&'static str> {
+    Some(match (kind, german) {
+        ("note", true) => "Hinweis",
+        ("tip", true) => "Tipp",
+        ("important", true) => "Wichtig",
+        ("warning", true) => "Warnung",
+        ("caution", true) => "Vorsicht",
+        ("note", false) => "Note",
+        ("tip", false) => "Tip",
+        ("important", false) => "Important",
+        ("warning", false) => "Warning",
+        ("caution", false) => "Caution",
+        _ => return None,
+    })
+}
+
 /// Bekannte Hinweis-Komponenten (MDX: Docusaurus, Starlight, Nextra, Mintlify …).
-fn admonition_kind(name: &str, variant: Option<&str>) -> Option<&'static str> {
+pub(crate) fn admonition_kind(name: &str, variant: Option<&str>) -> Option<&'static str> {
     let by_name = |n: &str| -> Option<&'static str> {
         Some(match n.to_ascii_lowercase().as_str() {
             "note" | "info" | "information" | "default" | "secondary" => "note",
@@ -1864,7 +1884,7 @@ fn admonition_kind(name: &str, variant: Option<&str>) -> Option<&'static str> {
     }
 }
 
-fn is_html_element(name: &str) -> bool {
+pub(crate) fn is_html_element(name: &str) -> bool {
     matches!(
         name,
         "a" | "abbr"
@@ -2012,7 +2032,7 @@ fn typst_date(date: &str) -> Option<String> {
     ))
 }
 
-fn percent_decode(text: &str) -> String {
+pub(crate) fn percent_decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -2041,7 +2061,7 @@ fn decode_entities(text: &str) -> String {
 }
 
 /// Relativer Pfad von `dir` zu `target` (beide absolut oder beide relativ).
-fn relative_path(target: &Path, dir: &Path) -> Option<PathBuf> {
+pub(crate) fn relative_path(target: &Path, dir: &Path) -> Option<PathBuf> {
     let target = normalize(target);
     let dir = normalize(dir);
     let target_parts: Vec<Component> = target.components().collect();
@@ -2064,7 +2084,7 @@ fn relative_path(target: &Path, dir: &Path) -> Option<PathBuf> {
     Some(out)
 }
 
-fn normalize(path: &Path) -> PathBuf {
+pub(crate) fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {
@@ -2082,7 +2102,7 @@ fn normalize(path: &Path) -> PathBuf {
 // Mini-HTML-Tokenizer (für HTML-Blöcke und JSX-Tags)
 
 #[derive(Debug, PartialEq)]
-enum HtmlToken {
+pub(crate) enum HtmlToken {
     Open {
         name: String,
         attrs: Vec<(String, String)>,
@@ -2095,7 +2115,7 @@ enum HtmlToken {
     Comment(String),
 }
 
-fn tokenize_html(html: &str) -> Vec<HtmlToken> {
+pub(crate) fn tokenize_html(html: &str) -> Vec<HtmlToken> {
     let mut tokens = Vec::new();
     let mut text = String::new();
     let mut rest = html;

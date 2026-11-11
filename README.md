@@ -17,7 +17,8 @@ Ein Ordner wird zum Workspace; der Dateibaum zeigt nur ihn. Eine Datei öffnet s
 
 - **Editor:** Workspace (ein Hauptordner) mit Dateibaum, Syntax-Highlighting, Tabs, geteilte Ansicht, Öffnen-Dialog.
 - **Schreiben (Markdown, Typst):** Formatleiste, Menüs „Format“/„Einfügen“, `/` am Zeilenanfang öffnet eine Einfüge-Liste, Erklärung beim Überfahren von Syntax, Spickzettel. „Neues Dokument“ legt Artikel, Bericht, Brief (DIN 5008), Buchkapitel, README oder Notiz an.
-- **Druck:** Live-Vorschau neben dem Text; Export als PDF (Typst-Satz) oder Umwandlung Markdown → Typst zum Weiterarbeiten.
+- **Druck:** Live-Vorschau neben dem Text mit Bau-Status und Hinweisen; Export als PDF (Typst-Satz) oder Umwandlung Markdown → Typst zum Weiterarbeiten.
+- **HTML:** Ein Dokument oder den ganzen Notizordner als statische Seiten exportieren – je Datei eine `.html`-Datei plus ein Stylesheet, offline und ohne JavaScript. Verknüpfungen zwischen Notizen werden zu relativen Links, Ordner bleiben Ordner, Hinweisboxen sehen aus wie im PDF.
 - **Notizen:** normale Markdown-Dateien im Notizordner (Ordner = Hierarchie, Dateiname = erste Zeile). Sofort schreiben ohne Dateinamen, Autosave, Volltextsuche, `#tags` im Text oder `tags:` im Frontmatter, Favoriten, Papierkorb (30 Tage), Versionsverlauf, tägliches Backup. Verknüpfungen mit `[[` sind normale relative Markdown-Links und funktionieren auch auf GitHub; Umbenennen und Verschieben passen sie an. „Notiz im Workspace speichern …“ legt eine Notiz als Datei im Workspace ab.
 - **Sync:** Den Notizordner in iCloud Drive, Nextcloud, Dropbox oder Syncthing legen (Menü Notizen → „Notizordner wählen …“) oder als Git-Repository führen. Änderungen von außen übernimmt DevMark, sobald das Fenster aktiv wird.
 
@@ -63,7 +64,7 @@ Notizen liegen als Markdown-Dateien in `~/Documents/DevMark Notizen` (wählbar, 
 | Crate | Inhalt |
 |---|---|
 | `apps/desktop` | GPUI-App |
-| `crates/writing` | Markdown/MDX → Typst, PDF/Vorschau, Formatieraktionen, Vorlagen |
+| `crates/writing` | Markdown/MDX → Typst und HTML, PDF/Vorschau, Formatieraktionen, Vorlagen |
 | `crates/storage` | SQLite, Migrationen, Änderungsprotokoll, Backups |
 | `crates/notes` | Notizordner: Markdown-Dateien, Index, Links, Ordner, Tags, Suche, Revisionen, Papierkorb |
 

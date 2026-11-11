@@ -50,6 +50,8 @@ actions!(
         NewDocument,
         ExportTypst,
         ExportPdf,
+        ExportHtml,
+        ExportNotesHtml,
         ToggleHelp,
         TogglePreview,
         NewNote,
@@ -1398,6 +1400,102 @@ impl Workspace {
         self.start_pdf_export(source, syntax, path, pdf_path, window, cx);
     }
 
+    /// Aktives Markdown-Dokument als statische HTML-Seite in einen neuen Ordner.
+    fn export_html(&mut self, _: &ExportHtml, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(buffer) = self.active_buffer() else {
+            return;
+        };
+        if buffer.syntax != Some(Syntax::Markdown) {
+            window.push_notification(
+                Notification::info("HTML-Export gibt es für Markdown-Dateien und Notizen."),
+                cx,
+            );
+            return;
+        }
+        let source = buffer.editor.read(cx).value().to_string();
+        let path = buffer.path.clone();
+        let name = format!("{} (HTML)", buffer.label());
+        self.ask_export_path(
+            name,
+            move |this, target, window, cx| {
+                this.start_html_export(
+                    move || devmark_writing::html::export_document(&source, &path, &target),
+                    window,
+                    cx,
+                )
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Ganzer Notizordner als statische Seiten; Ordner bleiben Ordner.
+    fn export_notes_html(
+        &mut self,
+        _: &ExportNotesHtml,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_all_notes(cx);
+        let root = self
+            .notes
+            .as_ref()
+            .map(|state| state.notes.root().to_path_buf())
+            .unwrap_or_else(notes_ui::vault_dir);
+        let name = format!("{} (HTML)", file_name(&root));
+        self.ask_export_path(
+            name,
+            move |this, target, window, cx| {
+                this.start_html_export(
+                    move || {
+                        let sources = devmark_writing::html::collect_markdown(&root);
+                        devmark_writing::html::export_site(&root, &sources, &target)
+                    },
+                    window,
+                    cx,
+                )
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn start_html_export(
+        &mut self,
+        export: impl FnOnce() -> std::io::Result<devmark_writing::html::Export> + Send + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let task = cx.background_spawn(async move { export() });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(export) => {
+                    let pages = match export.pages {
+                        1 => "1 Seite".to_string(),
+                        n => format!("{n} Seiten"),
+                    };
+                    let mut message = format!("HTML-Export fertig ({pages}).");
+                    if !export.warnings.is_empty() {
+                        message.push_str(" Hinweise:");
+                        for (source, warning) in export.warnings.iter().take(5) {
+                            message.push_str(&format!("\n• {}: {warning}", file_name(source)));
+                        }
+                    }
+                    window.push_notification(Notification::success(message), cx);
+                    cx.open_with_system(&export.entry);
+                    this.refresh_tree(cx);
+                }
+                Err(err) => window.push_notification(
+                    Notification::error(format!("HTML-Export fehlgeschlagen: {err}")),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn start_pdf_export(
         &mut self,
         source: String,
@@ -2410,6 +2508,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_document))
             .on_action(cx.listener(Self::export_typst))
             .on_action(cx.listener(Self::export_pdf))
+            .on_action(cx.listener(Self::export_html))
+            .on_action(cx.listener(Self::export_notes_html))
             .on_action(cx.listener(Self::next_placeholder))
             .on_action(cx.listener(Self::prev_placeholder))
             .on_action(cx.listener(Self::end_placeholders));
@@ -2743,6 +2843,7 @@ fn main() {
                 MenuItem::separator(),
                 MenuItem::action("Nach Typst umwandeln", ExportTypst),
                 MenuItem::action("Als PDF exportieren", ExportPdf),
+                MenuItem::action("Als HTML exportieren …", ExportHtml),
             ]),
             Menu::new("Format").items([
                 MenuItem::action("Fett", FormatBold),
@@ -2784,6 +2885,7 @@ fn main() {
                 MenuItem::separator(),
                 MenuItem::action("Notizordner im Finder zeigen", RevealVault),
                 MenuItem::action("Notizordner wählen …", ChooseVault),
+                MenuItem::action("Notizordner als HTML exportieren …", ExportNotesHtml),
                 MenuItem::action("Backup jetzt erstellen", BackupNow),
             ]),
             Menu::new("Ansicht").items([
