@@ -4,7 +4,7 @@ members = ["apps/desktop", "crates/*"]
 
 [workspace.package]
 edition = "2024"
-license = "GPL-3.0-or-later"
+license = "Apache-2.0 OR MIT"
 
 [workspace.dependencies]
 gpui-kit = { version = "0.7.3", features = ["tree-sitter-languages"] }

@@ -16,6 +16,7 @@ Alle nennenswerten Änderungen an DevMark stehen hier. DevMark folgt
 
 ### Changed
 
+- **Lizenz:** DevMark steht nach Wahl unter Apache-2.0 oder MIT (bisher GPL-3.0-or-later).
 - **Notizen:** Notizen sind Markdown-Dateien in einem eigenen Ordner (Standard `~/Documents/DevMark Notizen`); Ordner sind echte Unterordner, der Dateiname folgt der ersten Zeile, der Papierkorb liegt in `.trash/`. Notizen aus der bisherigen Datenbank werden beim ersten Start übernommen.
 - **Notizen:** Verknüpfungen sind normale relative Markdown-Links (Eingabe weiter mit `[[`) und werden beim Umbenennen und Verschieben angepasst. Tags kommen zusätzlich aus `tags:` im Frontmatter.
 - **Workspace:** Der Dateibaum bleibt auf den gewählten Hauptordner begrenzt. Dateien von außerhalb öffnen sich als einzelner Tab (mit Hinweis in Tab und Statuszeile), statt die Wurzel zu verschieben.

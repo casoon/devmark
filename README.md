@@ -69,4 +69,4 @@ Notizen liegen als Markdown-Dateien in `~/Documents/DevMark Notizen` (wählbar, 
 
 ## Lizenz
 
-GPL-3.0-or-later
+Nach Wahl [Apache-2.0](LICENSE-APACHE) oder [MIT](LICENSE-MIT).
