@@ -2604,15 +2604,24 @@ impl Render for Workspace {
                     self.show_preview as u8,
                     self.show_help as u8
                 );
-                let mut group = h_resizable(ElementId::Name(key.into()))
-                    .child(resizable_panel().child(editors));
+                let mut group = h_resizable(ElementId::Name(key.into())).child(
+                    resizable_panel()
+                        .size_range(MIN_TEXT..Pixels::MAX)
+                        .child(editors),
+                );
                 if let Some(history) = history {
-                    group = group.child(resizable_panel().size(px(300.)).child(history));
+                    group = group.child(
+                        resizable_panel()
+                            .size(px(300.))
+                            .size_range(MIN_SIDE..Pixels::MAX)
+                            .child(history),
+                    );
                 }
                 if self.show_preview {
                     group = group.child(
                         resizable_panel()
                             .size(px(420.))
+                            .size_range(MIN_PREVIEW..Pixels::MAX)
                             .child(self.render_preview(cx)),
                     );
                 }
@@ -2620,6 +2629,7 @@ impl Render for Workspace {
                     group = group.child(
                         resizable_panel()
                             .size(px(300.))
+                            .size_range(MIN_SIDE..Pixels::MAX)
                             .child(self.render_help(syntax, cx)),
                     );
                 }
@@ -2732,22 +2742,40 @@ impl Render for Workspace {
             .into(),
         ));
         if !self.focus_mode {
-            columns = columns.child(resizable_panel().size(px(236.)).child(self.render_nav(cx)));
+            columns = columns.child(
+                resizable_panel()
+                    .size(px(236.))
+                    .size_range(px(180.)..px(360.))
+                    .child(self.render_nav(cx)),
+            );
             if self.show_list {
-                columns =
-                    columns.child(resizable_panel().size(px(330.)).child(self.render_list(cx)));
+                columns = columns.child(
+                    resizable_panel()
+                        .size(px(330.))
+                        .size_range(px(240.)..px(520.))
+                        .child(self.render_list(cx)),
+                );
             }
         }
         root.child(self.render_topbar(window, cx))
             .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(columns.child(resizable_panel().child(main))),
+                div().flex_1().min_h_0().child(
+                    columns.child(
+                        resizable_panel()
+                            .size_range(MIN_TEXT..Pixels::MAX)
+                            .child(main),
+                    ),
+                ),
             )
             .child(StatusBar::new().left(status).right(h_flex().child(stats)))
     }
 }
+
+/// Mindestbreiten, damit in einem schmalen Fenster der Text nicht zwischen Liste und Vorschau
+/// zerquetscht wird: erst Vorschau und Seitenspalten werden schmaler.
+const MIN_TEXT: Pixels = px(360.);
+const MIN_PREVIEW: Pixels = px(240.);
+const MIN_SIDE: Pixels = px(220.);
 
 /// Beschreibung eines Schalters der Titelleiste.
 struct Segment {

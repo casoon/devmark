@@ -7,8 +7,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use devmark_notes::{
-    Document, Filter, Folder, Moves, Notes, OpenTask, Revision, SearchOrder, create_backup,
-    import_legacy, list_backups,
+    Document, Filter, Folder, Moves, Notes, OpenTask, Revision, SearchOrder, TagNode,
+    create_backup, import_legacy, list_backups,
 };
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::{
@@ -73,7 +73,7 @@ pub struct NotesState {
     pub favorites_only: bool,
     pub save_tasks: HashMap<String, Task<()>>,
     /// Alle Tags mit Anzahl; `tag_filter` schränkt die Liste ein.
-    pub tags: Vec<(String, usize)>,
+    pub tags: Vec<TagNode>,
     pub tag_filter: Option<String>,
     /// Versionsverlauf der Notiz, falls eingeblendet.
     pub history: Option<(String, Vec<Revision>)>,
@@ -440,9 +440,9 @@ impl Workspace {
                     .collect()
             })
             .unwrap_or_default();
-        state.tags = state.notes.tags().unwrap_or_default();
+        state.tags = state.notes.tag_tree().unwrap_or_default();
         if let Some(tag) = &state.tag_filter
-            && !state.tags.iter().any(|(t, _)| t.eq_ignore_ascii_case(tag))
+            && !state.tags.iter().any(|t| t.path.eq_ignore_ascii_case(tag))
         {
             state.tag_filter = None;
         }
@@ -1250,13 +1250,15 @@ impl Workspace {
                 .child(self.render_folders(state, &folder_tree(&state.folders), cx));
             if !state.tags.is_empty() {
                 body = body.child(nav_section("Tags", None, cx));
-                for (ix, (name, count)) in state.tags.iter().enumerate() {
+                for (ix, node) in state.tags.iter().enumerate() {
                     let selected = notes_view
                         && !trash
-                        && tag.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(name));
-                    let name = name.clone();
+                        && tag
+                            .as_deref()
+                            .is_some_and(|t| t.eq_ignore_ascii_case(&node.path));
+                    let (path, name, count) = (node.path.clone(), node.name.clone(), node.count);
                     body = body.child(
-                        nav_row(("nav-tag", ix), 0, selected, cx)
+                        nav_row(("nav-tag", ix), node.depth, selected, cx)
                             .child(
                                 div()
                                     .w(px(16.))
@@ -1279,7 +1281,7 @@ impl Workspace {
                                     .child(count.to_string()),
                             )
                             .on_click(
-                                cx.listener(move |this, _, _, cx| this.select_tag(&name, cx)),
+                                cx.listener(move |this, _, _, cx| this.select_tag(&path, cx)),
                             ),
                     );
                 }

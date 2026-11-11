@@ -7,6 +7,7 @@ All notable changes to DevMark are listed here. DevMark follows
 
 ### Added
 
+- **Notes:** nested tags (`#client/project`) show as a tree in the navigation; a parent tag also lists the notes of its sub-tags. See [Find](https://casoon.github.io/devmark/docs/guides/notes/#find).
 - **Notes:** “Heute“ (`Cmd/Ctrl-Shift-J`) opens today's note `Journal/<date>.md` and creates it if needed. See [Write](https://casoon.github.io/devmark/docs/guides/notes/).
 - **CLI:** `devmark --note "Text"` appends a dated entry to `Inbox.md` in the notes folder without opening a window. See [Capture from outside](https://casoon.github.io/devmark/docs/guides/notes/#capture-from-outside).
 - **Notes:** an “Aufgaben“ view lists the open tasks of all notes, grouped by note; ticking one off writes `- [x]` into the file. See [Find](https://casoon.github.io/devmark/docs/guides/notes/#find).
@@ -15,6 +16,7 @@ All notable changes to DevMark are listed here. DevMark follows
 
 ### Changed
 
+- **Interface:** navigation, list, text and preview keep minimum widths, so a narrow window shrinks the preview and side columns first instead of squeezing the text.
 - **Pages:** the home page shows the path of a document from Markdown to preview, PDF and web pages, and names the prebuilt downloads; the site uses the shared theme 0.12.12.
 
 ## [0.3.0] - 2026-11-11

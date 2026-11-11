@@ -199,6 +199,18 @@ pub fn task_lines(markdown: &str) -> Vec<(usize, bool, String)> {
     tasks
 }
 
+/// Eintrag im Tag-Baum: `kunde/projekt` hat den Oberbegriff `kunde`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagNode {
+    /// Voller Name mit `/`, wie in der Notiz.
+    pub path: String,
+    /// Letzter Namensteil, für die Anzeige.
+    pub name: String,
+    pub depth: usize,
+    /// Notizen mit diesem Tag oder einem Untertag (jede Notiz einmal).
+    pub count: usize,
+}
+
 /// Ordner der Tagesnotizen.
 pub const JOURNAL: &str = "Journal";
 
@@ -563,10 +575,12 @@ impl Notes {
         }
         if let Some(tag) = &filter.tag {
             args.push(Box::new(tag.clone()));
+            // Ein Oberbegriff zeigt auch die Notizen seiner Untertags (`kunde` → `kunde/projekt`).
             sql.push_str(&format!(
                 " AND EXISTS (SELECT 1 FROM document_tags dt JOIN tags t ON t.id = dt.tag_id
-                   WHERE dt.document_id = d.id AND t.name = ?{} COLLATE NOCASE)",
-                args.len()
+                   WHERE dt.document_id = d.id AND (t.name = ?{n} COLLATE NOCASE
+                     OR substr(t.name, 1, length(?{n}) + 1) = ?{n} || '/' COLLATE NOCASE))",
+                n = args.len()
             ));
         }
         if filter.favorites_only {
@@ -1016,15 +1030,47 @@ impl Notes {
     }
 
     /// Alle benutzten Tags mit Anzahl aktiver Notizen.
-    pub fn tags(&self) -> Result<Vec<(String, usize)>> {
+    /// Alle Tags als Baum (Oberbegriffe auch ohne eigene Notiz), `kunde` vor `kunde/projekt`.
+    pub fn tag_tree(&self) -> Result<Vec<TagNode>> {
         let mut stmt = self.store.conn().prepare(
-            "SELECT t.name, count(d.id) FROM tags t
+            "SELECT t.name, d.id FROM tags t
              JOIN document_tags dt ON dt.tag_id = t.id
-             JOIN documents d ON d.id = dt.document_id AND d.deleted_at IS NULL
-             GROUP BY t.id ORDER BY t.name COLLATE NOCASE",
+             JOIN documents d ON d.id = dt.document_id AND d.deleted_at IS NULL",
         )?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as usize)))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        // Kleingeschriebener Pfad → (Anzeigename des ersten Auftretens, Notizen).
+        let mut nodes: std::collections::BTreeMap<
+            String,
+            (String, usize, std::collections::HashSet<String>),
+        > = std::collections::BTreeMap::new();
+        for row in rows {
+            let (name, doc) = row?;
+            let mut path = String::new();
+            for (depth, part) in name.split('/').filter(|p| !p.is_empty()).enumerate() {
+                if depth > 0 {
+                    path.push('/');
+                }
+                path.push_str(part);
+                nodes
+                    .entry(path.to_lowercase())
+                    .or_insert_with(|| (path.clone(), depth, Default::default()))
+                    .2
+                    .insert(doc.clone());
+            }
+        }
+        // `/` sortiert vor allen anderen Zeichen, damit Kinder direkt hinter ihrem Elternteil
+        // stehen (auch bei `kunde-alt` neben `kunde/alpha`).
+        let mut nodes: Vec<_> = nodes.into_iter().collect();
+        nodes.sort_by_key(|(key, _)| key.replace('/', "\0"));
+        Ok(nodes
+            .into_iter()
+            .map(|(_, (path, depth, docs))| TagNode {
+                name: path.rsplit('/').next().unwrap_or(&path).to_string(),
+                path,
+                depth,
+                count: docs.len(),
+            })
+            .collect())
     }
 
     // ---- Verknüpfungen ----
@@ -1319,7 +1365,7 @@ pub(crate) mod tests {
         let all = n.list(&Filter::default()).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].folder_id.as_deref(), Some("Projekte"));
-        assert_eq!(n.tags().unwrap(), [("idee".to_string(), 1)]);
+        assert_eq!(n.tag_tree().unwrap().len(), 1);
         assert_eq!(n.folders().unwrap()[0].id, "Projekte");
         std::fs::remove_file(dir.join("Projekte/Plan.md")).unwrap();
         n.rescan().unwrap();
@@ -1585,6 +1631,53 @@ pub(crate) mod tests {
             "Journal/2026-11-12.md"
         );
         assert!(n.folders().unwrap().iter().any(|f| f.id == "Journal"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn nested_tags_form_a_tree_and_parents_list_their_children() {
+        let (mut n, dir) = vault();
+        n.create("A", "#kunde/alpha und #kunde/beta", None).unwrap();
+        n.create("B", "#kunde/alpha", None).unwrap();
+        n.create("C", "#Kunde", None).unwrap();
+        n.create("D", "#privat", None).unwrap();
+        n.create("E", "#kundenliste #kunde-alt", None).unwrap();
+        let tree = n.tag_tree().unwrap();
+        let shape: Vec<_> = tree
+            .iter()
+            .map(|t| (t.path.as_str(), t.name.as_str(), t.depth, t.count))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("kunde", "kunde", 0, 3),
+                ("kunde/alpha", "alpha", 1, 2),
+                ("kunde/beta", "beta", 1, 1),
+                ("kunde-alt", "kunde-alt", 0, 1),
+                ("kundenliste", "kundenliste", 0, 1),
+                ("privat", "privat", 0, 1),
+            ]
+        );
+        let titles = |tag: &str| -> Vec<String> {
+            let mut t: Vec<_> = n
+                .list(&Filter {
+                    tag: Some(tag.to_string()),
+                    ..Filter::default()
+                })
+                .unwrap()
+                .into_iter()
+                .map(|d| d.title)
+                .collect();
+            t.sort();
+            t
+        };
+        assert_eq!(
+            titles("kunde"),
+            ["A", "B", "C"],
+            "Oberbegriff, nicht kundenliste"
+        );
+        assert_eq!(titles("kunde/alpha"), ["A", "B"]);
+        assert_eq!(titles("kunde/beta"), ["A"]);
         std::fs::remove_dir_all(dir).ok();
     }
 

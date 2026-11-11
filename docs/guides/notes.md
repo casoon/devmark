@@ -18,7 +18,7 @@ Since they are just files, any other program can open, version or [sync](../sync
 ## Find
 
 - **Full-text search** across all notes with `Cmd/Ctrl-Shift-F`. A hit shows its folder path (for example `Projects / Client X`) so notes with the same title can be told apart. The button next to the search field sorts the hits by “Zuletzt“ (last modified, the default) or “Relevanz“ (best match); DevMark remembers the choice.
-- **Tags** as `#tag` in the text or as `tags:` in the frontmatter. A note's tags are shown above the text; click one to filter the list.
+- **Tags** as `#tag` in the text or as `tags:` in the frontmatter. A note's tags are shown above the text; click one to filter the list. Tags can be nested with a slash (`#client/project`): the navigation shows them as a tree, and clicking a parent such as `client` also lists the notes of its sub-tags.
 - **Favorites** are marked in the list; the “Favoriten“ view shows only those.
 - **Tasks:** the “Aufgaben“ view lists the open tasks (`- [ ] …`) of all notes, grouped by note, the most recently changed note first. Tasks in code blocks and in the frontmatter are ignored. The box in front of a task ticks it off – DevMark writes `- [x]` into the file and changes nothing else in it. A click on the text opens the note at that line.
 
