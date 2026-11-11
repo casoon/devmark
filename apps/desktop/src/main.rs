@@ -295,6 +295,24 @@ impl DocStats {
     }
 }
 
+/// Lesezeit in Minuten bei rund 200 Wörtern pro Minute, mindestens eine.
+fn reading_minutes(words: usize) -> usize {
+    ((words + 100) / 200).max(1)
+}
+
+/// Tausender mit geschütztem Leerzeichen: 1240 → „1 240“.
+fn group_digits(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (ix, c) in digits.chars().enumerate() {
+        if ix > 0 && (digits.len() - ix) % 3 == 0 {
+            out.push('\u{00A0}');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Textspalte im Schreib-Layout: rund 70 Zeichen.
 const WRITING_COLUMN: f32 = 720.;
 const WRITING_FONT_SIZE: f32 = 17.;
@@ -1685,8 +1703,9 @@ impl Workspace {
             (false, _, None) => String::new(),
         };
         let words = match buffer.stats.words {
-            1 => "1 Wort".to_string(),
-            n => format!("{n} Wörter"),
+            0 => "0 Wörter".to_string(),
+            1 => "1 Wort · 1 min".to_string(),
+            n => format!("{} Wörter · {} min", group_digits(n), reading_minutes(n)),
         };
         let filter = self.notes.as_ref().and_then(|n| n.tag_filter.clone());
         let mut tags = h_flex().flex_1().min_w_0().flex_wrap().gap_1();
@@ -2859,6 +2878,12 @@ mod tests {
             .collect();
         assert_eq!(outline, [(0, 1, "Titel"), (7, 2, "Unter")]);
         assert_eq!(stats.words, 10);
+        assert_eq!(super::reading_minutes(10), 1);
+        assert_eq!(super::reading_minutes(1240), 6);
+        assert_eq!(super::reading_minutes(1300), 7);
+        assert_eq!(super::group_digits(1240), "1\u{00A0}240");
+        assert_eq!(super::group_digits(999), "999");
+        assert_eq!(super::group_digits(1_234_567), "1\u{00A0}234\u{00A0}567");
         assert_eq!(stats.tags, ["tag"]);
         let typst =
             super::DocStats::of(Syntax::Typst, "= Kapitel\n== Abschnitt\n#set page()", false);
