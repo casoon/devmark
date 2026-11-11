@@ -5,6 +5,8 @@ All notable changes to DevMark are listed here. DevMark follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-11
+
 ### Changed
 
 - **Interface:** the window's title bar holds two groups of switches – list, split, focus and print preview, cheat sheet, note history – and the Typst, HTML and PDF exports; in a narrow window the switches show icons only. The status bar keeps only save state, word count and reading time.
