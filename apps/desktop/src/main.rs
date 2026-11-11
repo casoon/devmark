@@ -2197,7 +2197,7 @@ impl Workspace {
     }
 
     /// Setzt den Cursor im aktiven Text an den Anfang von `line` (ab 0).
-    fn go_to_line(&mut self, line: u32, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn go_to_line(&mut self, line: u32, window: &mut Window, cx: &mut Context<Self>) {
         let Some(buffer) = self.active_buffer() else {
             return;
         };

@@ -7,8 +7,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use devmark_notes::{
-    Document, Filter, Folder, Moves, Notes, Revision, SearchOrder, create_backup, import_legacy,
-    list_backups,
+    Document, Filter, Folder, Moves, Notes, OpenTask, Revision, SearchOrder, create_backup,
+    import_legacy, list_backups,
 };
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::{
@@ -65,6 +65,9 @@ pub struct NotesState {
     /// Reihenfolge der Suchtreffer; wird in `search-order` im Datenordner gemerkt.
     pub search_order: SearchOrder,
     pub rows: Vec<NoteRow>,
+    /// Navigation „Aufgaben“: offene Aufgaben aller Notizen statt der Notizliste.
+    pub show_tasks: bool,
+    pub tasks: Vec<OpenTask>,
     pub show_trash: bool,
     /// Navigation „Favoriten“: nur markierte Notizen.
     pub favorites_only: bool,
@@ -215,6 +218,8 @@ impl NotesState {
             search,
             search_order,
             rows: Vec::new(),
+            show_tasks: false,
+            tasks: Vec::new(),
             show_trash: false,
             favorites_only: false,
             save_tasks: HashMap::new(),
@@ -420,6 +425,11 @@ impl Workspace {
             })
         };
         state.rows = rows.unwrap_or_default();
+        state.tasks = if state.show_tasks {
+            state.notes.open_tasks().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         *state.index.borrow_mut() = state
             .notes
             .list(&Filter::default())
@@ -724,10 +734,44 @@ impl Workspace {
     fn show_note_view(&mut self, trash: bool, favorites: bool, cx: &mut Context<Self>) {
         if let Some(state) = self.notes.as_mut() {
             state.show_trash = trash;
+            state.show_tasks = false;
             state.favorites_only = favorites;
             state.folder_filter = None;
             state.tag_filter = None;
             self.sidebar = SidebarMode::Notes;
+        }
+        self.refresh_notes(cx);
+    }
+
+    /// Navigation: offene Aufgaben über alle Notizen.
+    fn show_task_view(&mut self, cx: &mut Context<Self>) {
+        if let Some(state) = self.notes.as_mut() {
+            state.show_trash = false;
+            state.show_tasks = true;
+            state.favorites_only = false;
+            state.folder_filter = None;
+            state.tag_filter = None;
+            self.sidebar = SidebarMode::Notes;
+        }
+        self.refresh_notes(cx);
+    }
+
+    /// Haken einer Aufgabe in der Datei umschalten. Eine offene Notiz wird vorher gesichert und
+    /// danach neu geladen.
+    fn toggle_task(&mut self, id: &str, line: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_note(id, window, cx);
+        let Some(state) = self.notes.as_mut() else {
+            return;
+        };
+        match state.notes.toggle_task(id, line) {
+            Ok(moves) => {
+                self.apply_note_moves(&moves, cx);
+                self.reload_clean_notes_later(cx);
+            }
+            Err(err) => window.push_notification(
+                Notification::error(format!("Aufgabe konnte nicht geändert werden: {err}")),
+                cx,
+            ),
         }
         self.refresh_notes(cx);
     }
@@ -964,6 +1008,7 @@ impl Workspace {
 
     pub(crate) fn toggle_tag_filter(&mut self, tag: &str, cx: &mut Context<Self>) {
         if let Some(state) = self.notes.as_mut() {
+            state.show_tasks = false;
             state.tag_filter = match &state.tag_filter {
                 Some(current) if current.eq_ignore_ascii_case(tag) => None,
                 _ => Some(tag.to_string()),
@@ -979,6 +1024,7 @@ impl Workspace {
             state.folder_filter = folder;
             state.show_trash = false;
             state.favorites_only = false;
+            state.show_tasks = false;
             state.tag_filter = None;
             self.sidebar = SidebarMode::Notes;
         }
@@ -1163,6 +1209,12 @@ impl Workspace {
                             cx.listener(|this, _, _, cx| this.show_note_view(false, true, cx)),
                         ),
                 )
+                .child(
+                    nav_row("nav-tasks", 0, notes_view && state.show_tasks && !trash, cx)
+                        .child(nav_icon(AssetIcon::CircleCheck, cx))
+                        .child("Aufgaben")
+                        .on_click(cx.listener(|this, _, _, cx| this.show_task_view(cx))),
+                )
                 .child(self.render_folders(state, &folder_tree(&state.folders), cx));
             if !state.tags.is_empty() {
                 body = body.child(nav_section("Tags", None, cx));
@@ -1331,6 +1383,8 @@ impl Workspace {
         };
         if state.show_trash {
             "Papierkorb".into()
+        } else if state.show_tasks {
+            "Aufgaben".into()
         } else if state.favorites_only {
             "Favoriten".into()
         } else if let Some(tag) = &state.tag_filter {
@@ -1350,6 +1404,7 @@ impl Workspace {
         if let Some(state) = self.notes.as_mut() {
             state.folder_filter = None;
             state.favorites_only = false;
+            state.show_tasks = false;
             state.show_trash = false;
             self.sidebar = SidebarMode::Notes;
         }
@@ -1380,6 +1435,10 @@ impl Workspace {
                 }))
                 .collect()
         });
+        let query_empty = state.search.read(cx).value().trim().is_empty();
+        if state.show_tasks && !state.show_trash && query_empty {
+            return self.render_tasks_list(state, active_note.as_deref(), cx);
+        }
         let mut list = v_flex()
             .id("notes-list")
             .flex_1()
@@ -1622,6 +1681,110 @@ impl Workspace {
                                 .on_click(cx.listener(|this, _, _, cx| this.toggle_search_order(cx))),
                         )
                     }),
+            )
+            .child(list)
+            .into_any_element()
+    }
+
+    /// Offene Aufgaben, nach Notiz gruppiert (neueste Notiz zuerst). Der Haken schreibt in die
+    /// Datei, ein Klick auf den Text öffnet die Notiz an der Zeile.
+    fn render_tasks_list(
+        &self,
+        state: &NotesState,
+        active_note: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut list = v_flex()
+            .id("tasks-list")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .p_1()
+            .gap_0p5();
+        if state.tasks.is_empty() {
+            list = list.child(
+                div()
+                    .p_2()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                        "Keine offenen Aufgaben. Eine Zeile „- [ ] …“ in einer Notiz legt eine an.",
+                    ),
+            );
+        }
+        let mut last: Option<&str> = None;
+        for (ix, task) in state.tasks.iter().enumerate() {
+            if last != Some(task.note_id.as_str()) {
+                last = Some(task.note_id.as_str());
+                let title = state
+                    .notes
+                    .get(&task.note_id)
+                    .ok()
+                    .flatten()
+                    .map(|d| d.display_title())
+                    .unwrap_or_else(|| devmark_notes::stem(&task.note_id).to_string());
+                list = list.child(
+                    div()
+                        .px_3()
+                        .pt_3()
+                        .pb_1()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(cx.theme().muted_foreground)
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .child(title),
+                );
+            }
+            let (open_id, toggle_id, line) =
+                (task.note_id.clone(), task.note_id.clone(), task.line);
+            let selected = active_note == Some(task.note_id.as_str());
+            list = list.child(
+                h_flex()
+                    .id(("task", ix))
+                    .role(Role::ListItem)
+                    .aria_label(task.text.clone())
+                    .w_full()
+                    .gap_1()
+                    .px_2()
+                    .py_0p5()
+                    .rounded(cx.theme().radius)
+                    .when(selected, |this| this.bg(cx.theme().primary.opacity(0.1)))
+                    .child(
+                        Button::new(("task-done", ix))
+                            .ghost()
+                            .small()
+                            .label("☐")
+                            .tooltip("Als erledigt markieren")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.toggle_task(&toggle_id, line, window, cx)
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(("task-text", ix))
+                            .flex_1()
+                            .min_w_0()
+                            .py_1()
+                            .text_sm()
+                            .cursor_pointer()
+                            .line_clamp(2)
+                            .child(task.text.clone())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_note(open_id.clone(), window, cx);
+                                this.go_to_line(line as u32, window, cx);
+                            })),
+                    ),
+            );
+        }
+        v_flex()
+            .size_full()
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .child(Input::new(&state.search).small().cleanable(true)),
             )
             .child(list)
             .into_any_element()

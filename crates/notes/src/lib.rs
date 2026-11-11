@@ -127,6 +127,78 @@ pub struct SearchHit {
     pub updated_at: i64,
 }
 
+/// Offene Aufgabe (`- [ ] Text`) in einer Notiz.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenTask {
+    pub note_id: String,
+    /// Zeile in der Datei, ab 0.
+    pub line: usize,
+    pub text: String,
+}
+
+/// Aufgabenzeilen eines Markdown-Textes als (Zeile ab 0, erledigt, Text); Zeilen in Codeblöcken
+/// und im Frontmatter zählen nicht.
+pub fn task_lines(markdown: &str) -> Vec<(usize, bool, String)> {
+    let mut tasks = Vec::new();
+    let mut fence: Option<char> = None;
+    let mut frontmatter = markdown.starts_with("---\n");
+    for (ix, line) in markdown.lines().enumerate() {
+        if frontmatter {
+            if ix > 0 && line.trim_end() == "---" {
+                frontmatter = false;
+            }
+            continue;
+        }
+        let trimmed = line.trim_start();
+        let marker = ['`', '~']
+            .into_iter()
+            .find(|c| trimmed.len() >= 3 && trimmed.chars().take(3).all(|x| x == *c));
+        match (fence, marker) {
+            (None, Some(c)) => {
+                fence = Some(c);
+                continue;
+            }
+            (Some(open), Some(c)) if open == c => {
+                fence = None;
+                continue;
+            }
+            (Some(_), _) => continue,
+            _ => {}
+        }
+        let after_bullet = ['-', '*', '+']
+            .iter()
+            .find_map(|b| trimmed.strip_prefix(*b))
+            .or_else(|| {
+                let digits = trimmed.trim_start_matches(|c: char| c.is_ascii_digit());
+                (digits.len() < trimmed.len())
+                    .then(|| {
+                        digits
+                            .strip_prefix('.')
+                            .or_else(|| digits.strip_prefix(')'))
+                    })
+                    .flatten()
+            });
+        let Some(rest) = after_bullet.and_then(|r| r.strip_prefix(' ')) else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let (done, text) = if let Some(t) = rest.strip_prefix("[ ]") {
+            (false, t)
+        } else if let Some(t) = rest
+            .strip_prefix("[x]")
+            .or_else(|| rest.strip_prefix("[X]"))
+        {
+            (true, t)
+        } else {
+            continue;
+        };
+        if text.is_empty() || text.starts_with(' ') {
+            tasks.push((ix, done, text.trim().to_string()));
+        }
+    }
+    tasks
+}
+
 /// Reihenfolge der Suchtreffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SearchOrder {
@@ -942,6 +1014,63 @@ impl Notes {
             .collect())
     }
 
+    // ---- Aufgaben ----
+
+    /// Offene Aufgaben aller aktiven Notizen, zuletzt geänderte Notiz zuerst. Wird aus dem
+    /// Inhalt im Index gelesen, damit es mit dem Index aus dem Ordner neu aufbaubar bleibt.
+    pub fn open_tasks(&self) -> Result<Vec<OpenTask>> {
+        let mut stmt = self.store.conn().prepare(
+            "SELECT id, content FROM documents
+             WHERE deleted_at IS NULL AND content LIKE '%[ ]%'
+             ORDER BY updated_at DESC, id",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut tasks = Vec::new();
+        for row in rows {
+            let (id, content) = row?;
+            for (line, done, text) in task_lines(&content) {
+                if !done {
+                    tasks.push(OpenTask {
+                        note_id: id.clone(),
+                        line,
+                        text,
+                    });
+                }
+            }
+        }
+        Ok(tasks)
+    }
+
+    /// Haken in Zeile `line` (ab 0) umschalten; nur diese Zeile ändert sich. Fehlt dort eine
+    /// Aufgabe (Notiz zwischenzeitlich geändert), bleibt alles wie es ist.
+    pub fn toggle_task(&mut self, id: &str, line: usize) -> Result<Moves> {
+        let Some(current) = self.get(id)? else {
+            return Ok(Vec::new());
+        };
+        if !task_lines(&current.content)
+            .iter()
+            .any(|(l, ..)| *l == line)
+        {
+            return Ok(Vec::new());
+        }
+        let mut content = String::with_capacity(current.content.len());
+        for (ix, part) in current.content.split_inclusive('\n').enumerate() {
+            if ix == line {
+                let toggled = if let Some(at) = part.find("[ ]") {
+                    format!("{}[x]{}", &part[..at], &part[at + 3..])
+                } else if let Some(at) = part.find("[x]").or_else(|| part.find("[X]")) {
+                    format!("{}[ ]{}", &part[..at], &part[at + 3..])
+                } else {
+                    part.to_string()
+                };
+                content.push_str(&toggled);
+            } else {
+                content.push_str(part);
+            }
+        }
+        self.save_content(id, &content)
+    }
+
     // ---- Suche ----
 
     /// Volltextsuche über Titel und Inhalt (Wortanfänge, Umlaut-/Akzent-tolerant).
@@ -1321,6 +1450,56 @@ pub(crate) mod tests {
         assert_eq!(ids(SearchOrder::Recent), [new.id.clone(), old.id]);
         let hits = n.search("einkauf", 10, SearchOrder::Recent).unwrap();
         assert_eq!(hits[0].folder_id.as_deref(), Some("Haus"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn tasks_are_found_outside_code_and_toggle_one_line() {
+        let text = "---\ntags: [x]\n---\n# Plan\n- [ ] Milch\n- [x] Brot\n  * [ ] eingerückt\n1. [ ] nummeriert\n- [ ]kein Leerzeichen\n```\n- [ ] im Code\n```\n~~~\n- [ ] auch im Code\n~~~\nText [ ] mitten\n- [ ] Ende";
+        let found = task_lines(text);
+        assert_eq!(
+            found,
+            [
+                (4, false, "Milch".to_string()),
+                (5, true, "Brot".to_string()),
+                (6, false, "eingerückt".to_string()),
+                (7, false, "nummeriert".to_string()),
+                (16, false, "Ende".to_string()),
+            ]
+        );
+
+        let (mut n, dir) = vault();
+        let a = n
+            .create("Alt", "- [ ] alt eins\r\n- [ ] alt zwei\r\n", None)
+            .unwrap();
+        let b = n.create("Neu", text, None).unwrap();
+        n.store
+            .conn()
+            .execute(
+                "UPDATE documents SET updated_at = 5 WHERE id = ?1",
+                params![a.id],
+            )
+            .unwrap();
+        let open = n.open_tasks().unwrap();
+        assert_eq!(open[0].note_id, b.id, "neueste Notiz zuerst");
+        assert_eq!(open.len(), 6);
+        assert!(!open.iter().any(|t| t.text.contains("Code")));
+
+        n.toggle_task(&b.id, 4).unwrap();
+        let expected = text.replacen("- [ ] Milch", "- [x] Milch", 1);
+        assert_eq!(
+            read(&dir, &b.id),
+            expected,
+            "nur die eine Zeile ändert sich"
+        );
+        n.toggle_task(&b.id, 4).unwrap();
+        assert_eq!(read(&dir, &b.id), text);
+        // Zeilenenden bleiben erhalten.
+        n.toggle_task(&a.id, 1).unwrap();
+        assert_eq!(read(&dir, &a.id), "- [ ] alt eins\r\n- [x] alt zwei\r\n");
+        // Keine Aufgabe in der Zeile: nichts passiert.
+        n.toggle_task(&b.id, 3).unwrap();
+        assert_eq!(read(&dir, &b.id), text);
         std::fs::remove_dir_all(dir).ok();
     }
 
