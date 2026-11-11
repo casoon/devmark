@@ -1,44 +1,25 @@
 # Changelog
 
-Alle nennenswerten Änderungen an DevMark stehen hier. DevMark folgt
-[Semantic Versioning](https://semver.org/lang/de/); vor 1.0 können sich Bedienung und Datenformat noch ändern.
+All notable changes to DevMark are listed here. DevMark follows
+[Semantic Versioning](https://semver.org/): before 1.0, the interface and the data format may still change.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-11
+
 ### Added
 
-- **Download:** Releases enthalten eine Universal-App für macOS und ein Archiv für Linux (x86_64), gebaut in GitHub Actions, mit SHA-256-Prüfsummen, signierter Build-Provenance und den Lizenzen der enthaltenen Fremdsoftware (`THIRD-PARTY-LICENSES.txt`).
-- **Schreiben:** Über dem Text stehen Speicherstand, Wortzahl und Lesezeit, bei Notizen zusätzlich die `#tags` (Klick filtert die Notizliste).
-- **Schreiben:** Gliederung am rechten Rand – ein Strich je Überschrift, Klick springt hin.
-- **Druck:** Die Kopfzeile der Druckvorschau zeigt Quelle → Ziel und den Bau-Status (Satzzeit bzw. Zahl der Hinweise). Klick listet die Hinweise; solche mit Zeilenangabe springen an die Stelle im Text. Auch `devmark-typst` nennt bei Hinweisen die Zeile.
-- **Druck:** `accent: "#0a7f6f"` im Frontmatter färbt Überschriften, Links, Hinweisboxen und Tabellenkopf im PDF; bei zu wenig Kontrast zu Papierweiß erscheint ein Hinweis.
-- **Export:** Datei → „Als HTML exportieren …“ und Notizen → „Notizordner als HTML exportieren …“ erzeugen statische Seiten mit einem Stylesheet, offline und ohne JavaScript. Verknüpfungen zwischen Notizen werden zu relativen `.html`-Links, Ordner bleiben Ordner, Hinweisboxen sehen aus wie im PDF; bei mehreren Seiten entsteht eine Übersicht `index.html`.
-- **Notizen:** Navigation „Favoriten“ zeigt nur markierte Notizen.
-- **Notizen:** Menü Notizen → „Notiz im Workspace speichern …“ legt die aktive Notiz als Markdown-Datei im Workspace ab, „Notizordner im Finder zeigen“ und „Notizordner wählen …“ führen zum bzw. wechseln den Ordner.
-- **Workspace:** Umschalter oben in der Navigation mit Ordnername, zuletzt geöffneten Workspaces und „Ordner öffnen …“; Menü Datei → „Workspace öffnen …“.
-- **Oberfläche:** Ansicht → „Liste ein/aus“ (Cmd/Ctrl-Shift-L) blendet die mittlere Spalte aus, „Fokusmodus“ (Cmd/Ctrl-Shift-Enter) zeigt nur den Text.
-- **Doku:** Projektseite mit Dokumentation unter [casoon.github.io/devmark](https://casoon.github.io/devmark/) – Installation, Anleitungen zu Schreiben, Druck, Notizen und Abgleich, Referenz der Tastenkürzel und von `devmark-typst`.
-
-### Changed
-
-- **Lizenz:** DevMark steht nach Wahl unter Apache-2.0 oder MIT (bisher GPL-3.0-or-later).
-- **Notizen:** Notizen sind Markdown-Dateien in einem eigenen Ordner (Standard `~/Documents/DevMark Notizen`); Ordner sind echte Unterordner, der Dateiname folgt der ersten Zeile, der Papierkorb liegt in `.trash/`. Notizen aus der bisherigen Datenbank werden beim ersten Start übernommen.
-- **Notizen:** Verknüpfungen sind normale relative Markdown-Links (Eingabe weiter mit `[[`) und werden beim Umbenennen und Verschieben angepasst. Tags kommen zusätzlich aus `tags:` im Frontmatter.
-- **Workspace:** Der Dateibaum bleibt auf den gewählten Hauptordner begrenzt. Dateien von außerhalb öffnen sich als einzelner Tab (mit Hinweis in Tab und Statuszeile), statt die Wurzel zu verschieben.
-- **Workspace:** Ohne Ordner-Argument startet DevMark im zuletzt genutzten Workspace oder ohne Workspace, nicht mehr im Home-Ordner. Neue Dokumente und Exporte landen im Workspace.
-- **Schreiben:** Markdown, Typst und Notizen erscheinen in einer Serifenschrift in einer zentrierten Textspalte; Code bleibt in Monospace.
-- **Notizen:** Die Liste zeigt Titel, Zeit und zwei Zeilen Vorschau; Verschieben, Favorit und Papierkorb erscheinen erst beim Überfahren.
-- **Oberfläche:** Drei Spalten: links die Navigation (Notizen, Favoriten, Notizordner, Tags, Workspace-Dateien, Suche, Papierkorb), in der Mitte die Liste bzw. der Dateibaum, rechts der Text. Rückverweise stehen unter der Notiz, die Formatleiste erscheint nur bei Dateien. Die Grautöne sind etwas wärmer.
-
-### Removed
-
-- **Notizen:** Der eigene Sync-Ordner und „Alle Notizen exportieren …“ entfallen – der Notizordner selbst lässt sich über iCloud Drive, Nextcloud, Syncthing oder Git abgleichen.
-
-### Fixed
-
-- **Notizen:** Im PDF einer Notiz stehen Verknüpfungen zu anderen Notizen als Text statt als Link auf eine `.md`-Datei, die es beim Empfänger nicht gibt – wie schon in der Druckvorschau.
-- **Oberfläche:** Die Icons für „Dateien“ und „Notizen“ in der Navigation werden wieder angezeigt.
+- **Download:** first public release, under Apache-2.0 or MIT – a universal app for macOS and an archive for Linux (x86_64), built in GitHub Actions with checksums and signed build provenance. See [Verify a download](https://casoon.github.io/devmark/docs/getting-started/installation/#verify-a-download).
+- **Workspace:** one main folder with file tree, syntax highlighting, tabs and split view, and a switcher with recently used workspaces. Files from outside open as a single tab. See [First steps](https://casoon.github.io/devmark/docs/getting-started/first-steps/#workspace).
+- **Interface:** three columns – navigation, list or file tree, text – with focus mode (Cmd/Ctrl-Shift-Enter) and a toggle for the list (Cmd/Ctrl-Shift-L).
+- **Writing:** Markdown and Typst with formatting bar, insert list (`/` at the start of a line), syntax hints, cheat sheet, templates and an outline in the margin; save state, word count and reading time above the text. See [Writing](https://casoon.github.io/devmark/docs/guides/writing/).
+- **Print:** live print preview next to the text with build status and warnings that jump to their line; PDF export through Typst, all offline; `accent` in the frontmatter colours headings, links, callouts and table headers. See [Print preview and PDF](https://casoon.github.io/devmark/docs/guides/print-and-pdf/).
+- **Export:** a document or the whole notes folder as static HTML pages with one stylesheet, without JavaScript; links between notes keep working. See [Export as HTML](https://casoon.github.io/devmark/docs/guides/print-and-pdf/#export-as-html).
+- **Notes:** plain Markdown files in a notes folder, with full-text search, `#tags`, favorites, `[[` links that stay valid when notes move, backlinks, version history, trash and daily backup. See [Notes](https://casoon.github.io/devmark/docs/guides/notes/).
+- **Sync:** put the notes folder in any synced folder or a Git repository; DevMark picks up changes from outside when its window becomes active. See [Sync](https://casoon.github.io/devmark/docs/guides/sync/).
+- **CLI:** `devmark-typst` converts Markdown and MDX to Typst or PDF. See [devmark-typst](https://casoon.github.io/devmark/docs/reference/devmark-typst/).
+- **Docs:** project page with documentation at [casoon.github.io/devmark](https://casoon.github.io/devmark/).
 
 ### Security
 
-- **Datenbank:** `rusqlite` 0.41 bündelt SQLite 3.54 und schließt damit RUSTSEC-2026-0459 (uninitialisierter Speicher bei nicht passendem Datenbank-/WAL-Paar).
+- **Database:** `rusqlite` 0.41 bundles SQLite 3.54, which fixes RUSTSEC-2026-0459.
