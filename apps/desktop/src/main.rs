@@ -3011,7 +3011,47 @@ fn set_heading_color(theme: &mut Theme, color: &str) {
     theme.highlight_theme = Arc::new(highlight);
 }
 
-fn main() {
+/// `devmark --note "Text"` hängt den Text an `Inbox.md` im Notizordner an, ohne ein Fenster zu
+/// öffnen; ohne Text wird von der Standardeingabe gelesen. `None`, wenn kein `--note` gegeben ist.
+fn quick_note() -> Option<std::process::ExitCode> {
+    use std::io::Read;
+    let mut args = std::env::args().skip(1);
+    if !matches!(args.next().as_deref(), Some("--note" | "-n")) {
+        return None;
+    }
+    let mut text = args.collect::<Vec<_>>().join(" ");
+    if text.trim().is_empty() {
+        std::io::stdin().read_to_string(&mut text).ok();
+    }
+    if text.trim().is_empty() {
+        eprintln!("Verwendung: devmark --note \"Text\"  (oder Text über die Standardeingabe)");
+        return Some(std::process::ExitCode::from(2));
+    }
+    let ms = now_ms();
+    let stamp = format!(
+        "{} {:02}:{:02} UTC",
+        iso_date(ms),
+        ms.rem_euclid(86_400_000) / 3_600_000,
+        ms.rem_euclid(3_600_000) / 60_000
+    );
+    Some(
+        match devmark_notes::append_to_inbox(&notes_ui::vault_dir(), &text, &stamp) {
+            Ok(path) => {
+                println!("Angehängt an {}", path.display());
+                std::process::ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("Notiz konnte nicht gespeichert werden: {err}");
+                std::process::ExitCode::FAILURE
+            }
+        },
+    )
+}
+
+fn main() -> std::process::ExitCode {
+    if let Some(code) = quick_note() {
+        return code;
+    }
     // Argument: Ordner (wird Workspace) oder Datei (wird geöffnet, Workspace = zuletzt genutzter).
     // Ohne Argument: zuletzt genutzter Workspace, sonst keiner – nie stillschweigend Home oder „/“.
     let arg = std::env::args()
@@ -3173,6 +3213,7 @@ fn main() {
         })
         .detach();
     });
+    std::process::ExitCode::SUCCESS
 }
 
 /// `file:///Users/x/Notiz%20A.md` → Pfad.

@@ -199,6 +199,32 @@ pub fn task_lines(markdown: &str) -> Vec<(usize, bool, String)> {
     tasks
 }
 
+/// Name der Sammelnotiz für schnell erfasste Gedanken.
+pub const INBOX: &str = "Inbox.md";
+
+/// Hängt `text` mit Zeitstempelzeile an `Inbox.md` im Notizordner an (legt sie an, falls sie
+/// fehlt). Nur Anhängen an die Datei: eine in der App offene Inbox bleibt unberührt, bis das
+/// Fenster aktiv wird und von außen geänderte Notizen nachlädt.
+pub fn append_to_inbox(root: &Path, text: &str, stamp: &str) -> Result<PathBuf> {
+    use std::io::Write;
+    std::fs::create_dir_all(root)?;
+    let path = root.join(INBOX);
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut entry = String::new();
+    if existing.is_empty() {
+        entry.push_str("# Inbox\n");
+    } else if !existing.ends_with('\n') {
+        entry.push('\n');
+    }
+    entry.push_str(&format!("\n### {stamp}\n\n{}\n", text.trim_end()));
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?
+        .write_all(entry.as_bytes())?;
+    Ok(path)
+}
+
 /// Reihenfolge der Suchtreffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SearchOrder {
@@ -1500,6 +1526,31 @@ pub(crate) mod tests {
         // Keine Aufgabe in der Zeile: nichts passiert.
         n.toggle_task(&b.id, 3).unwrap();
         assert_eq!(read(&dir, &b.id), text);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn inbox_is_created_and_appended_to() {
+        let dir = std::env::temp_dir().join(format!("devmark-inbox-{}", new_id()));
+        let path = append_to_inbox(&dir, "Erster Gedanke", "2026-11-11 14:32 UTC").unwrap();
+        assert_eq!(path, dir.join("Inbox.md"));
+        append_to_inbox(
+            &dir,
+            "Zweiter\nüber zwei Zeilen  \n",
+            "2026-11-11 15:00 UTC",
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# Inbox\n\n### 2026-11-11 14:32 UTC\n\nErster Gedanke\n\n### 2026-11-11 15:00 UTC\n\nZweiter\nüber zwei Zeilen\n"
+        );
+        // Datei ohne Zeilenende am Schluss: der Eintrag beginnt trotzdem in einer neuen Zeile.
+        std::fs::write(&path, "# Inbox\nvon Hand").unwrap();
+        append_to_inbox(&dir, "x", "t").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# Inbox\nvon Hand\n\n### t\n\nx\n"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 

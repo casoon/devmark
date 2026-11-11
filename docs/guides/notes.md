@@ -25,6 +25,10 @@ Since they are just files, any other program can open, version or [sync](../sync
 
 `[[` opens a picker of existing notes. What gets inserted is a plain relative Markdown link – it works on GitHub and in any other Markdown program too. When a note is renamed or moved, DevMark updates the links. Backlinks are shown below the note.
 
+## Capture from outside
+
+`devmark --note "Buy stamps"` appends the text to `Inbox.md` in the notes folder – without opening a window, so it works from a shell, a shortcut or a launcher. Without text, DevMark reads from standard input (`pbpaste | devmark --note`). Each entry gets a heading with the date and time in UTC; `Inbox.md` is created if it is missing. If the note is open in DevMark, the new entries show up when the window becomes active again.
+
 ## History, trash, backup
 
 - **Version history:** earlier versions of a note are kept and can be restored.
