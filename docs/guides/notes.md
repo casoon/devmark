@@ -22,6 +22,10 @@ Since they are just files, any other program can open, version or [sync](../sync
 - **Favorites** are marked in the list; the “Favoriten“ view shows only those.
 - **Tasks:** the “Aufgaben“ view lists the open tasks (`- [ ] …`) of all notes, grouped by note, the most recently changed note first. Tasks in code blocks and in the frontmatter are ignored. The box in front of a task ticks it off – DevMark writes `- [x]` into the file and changes nothing else in it. A click on the text opens the note at that line.
 
+## Block view
+
+“Blöcke“ in the title bar (`Cmd/Ctrl-Shift-B`) shows a note as a sequence of blocks – paragraphs, headings, lists, quotes, code, tables. Blocks you are not editing appear formatted; click one to edit its Markdown. `Esc` finishes editing, the arrow keys at the first or last line move to the neighbouring block, and a click below the last block starts a new paragraph. The file changes only where you type: a note you did not change stays byte-for-byte the same. This view is an early version for notes; selecting text across several blocks is not possible yet.
+
 ## Link
 
 `[[` opens a picker of existing notes. What gets inserted is a plain relative Markdown link – it works on GitHub and in any other Markdown program too. When a note is renamed or moved, DevMark updates the links. Backlinks are shown below the note.

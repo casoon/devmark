@@ -9,6 +9,7 @@ order: 1
 | Cmd/Ctrl-N | New document from template |
 | Cmd/Ctrl-Shift-N | New note |
 | Cmd/Ctrl-Shift-J | Today's note |
+| Cmd/Ctrl-Shift-B | Block view of a note |
 | Cmd/Ctrl-P | Quick open: notes and workspace files |
 | Cmd/Ctrl-Shift-F | Search notes |
 | Cmd/Ctrl-O | Open |

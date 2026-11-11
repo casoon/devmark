@@ -2,6 +2,7 @@
 //! Schreibhilfen für Markdown/Typst und Export nach Typst/PDF.
 
 mod assist;
+mod blocks_ui;
 mod fonts;
 mod notes_ui;
 mod quick_open;
@@ -51,6 +52,7 @@ actions!(
         Quit,
         NewDocument,
         OpenDailyNote,
+        ToggleBlocks,
         OpenQuick,
         ExportTypst,
         ExportPdf,
@@ -252,6 +254,8 @@ struct Buffer {
     saved_at: Option<i64>,
     /// Wortzahl, Gliederung, Tags – nur bei Markdown/Typst.
     stats: DocStats,
+    /// Blockansicht (nur Markdown-Notizen), solange sie eingeschaltet ist.
+    blocks: Option<blocks_ui::BlockView>,
 }
 
 /// Überschrift für die Gliederung am rechten Rand.
@@ -727,23 +731,7 @@ impl Workspace {
 
         let subscription = cx.subscribe(&editor, |this, editor, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
-                this.track_placeholders(&editor, cx);
-                let mut note_id = None;
-                let text = editor.read(cx).value();
-                if let Some(buffer) = this.buffer_for_editor(&editor) {
-                    buffer.dirty = true;
-                    note_id = buffer.note_id.clone();
-                    if let Some(syntax) = buffer.syntax {
-                        buffer.stats = DocStats::of(syntax, &text, note_id.is_some());
-                    }
-                }
-                if let Some(note_id) = note_id {
-                    this.schedule_note_save(note_id, cx);
-                }
-                if this.active_buffer().is_some_and(|b| b.editor == editor) {
-                    this.schedule_preview(Duration::from_millis(400), cx);
-                }
-                cx.notify();
+                this.editor_changed(&editor, cx);
             }
         });
         self._subscriptions.push(subscription);
@@ -771,9 +759,31 @@ impl Workspace {
             tabstops: None,
             saved_at,
             stats,
+            blocks: None,
         });
         pane.active = pane.buffers.len() - 1;
         self.schedule_preview(Duration::ZERO, cx);
+        cx.notify();
+    }
+
+    /// Text eines Editors hat sich geändert: Platzhalter, Statistik, Autosave und Vorschau.
+    fn editor_changed(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
+        self.track_placeholders(editor, cx);
+        let mut note_id = None;
+        let text = editor.read(cx).value();
+        if let Some(buffer) = self.buffer_for_editor(editor) {
+            buffer.dirty = true;
+            note_id = buffer.note_id.clone();
+            if let Some(syntax) = buffer.syntax {
+                buffer.stats = DocStats::of(syntax, &text, note_id.is_some());
+            }
+        }
+        if let Some(note_id) = note_id {
+            self.schedule_note_save(note_id, cx);
+        }
+        if self.active_buffer().is_some_and(|b| &b.editor == editor) {
+            self.schedule_preview(Duration::from_millis(400), cx);
+        }
         cx.notify();
     }
 
@@ -1791,6 +1801,7 @@ impl Workspace {
         let buffer = self.active_buffer().filter(|_| self.new_doc.is_none());
         let syntax = buffer.and_then(|b| b.syntax);
         let is_note = buffer.is_some_and(|b| b.note_id.is_some());
+        let blocks_on = buffer.is_some_and(|b| b.blocks.is_some());
         let history_open = self.notes.as_ref().is_some_and(|n| n.history.is_some());
         let compact = window.viewport_size().width < px(1180.);
 
@@ -1871,6 +1882,21 @@ impl Workspace {
                     |this, window, cx| this.toggle_help(&ToggleHelp, window, cx),
                     cx,
                 ));
+        }
+        if is_note && syntax == Some(Syntax::Markdown) {
+            panels = panels.child(self.segment(
+                Segment {
+                    id: "blocks",
+                    icon: AssetIcon::LayoutDashboard,
+                    label: "Blöcke",
+                    tooltip: "Blockansicht: Absätze formatiert, geschrieben wird im angeklickten Block",
+                    action: &ToggleBlocks,
+                    active: blocks_on,
+                    compact,
+                },
+                |this, window, cx| this.toggle_blocks(&ToggleBlocks, window, cx),
+                cx,
+            ));
         }
         if is_note {
             panels = panels.child(self.segment(
@@ -2591,11 +2617,15 @@ impl Workspace {
                                             .child(self.render_doc_header(buffer, cx))
                                             .child(
                                                 div().flex_1().min_h_0().child(
-                                                    editor
-                                                        .font_family(SharedString::from(
-                                                            self.fonts.text.clone(),
-                                                        ))
-                                                        .text_size(px(WRITING_FONT_SIZE)),
+                                                    match buffer.blocks.as_ref() {
+                                                        Some(view) => self.render_blocks(view, cx),
+                                                        None => editor
+                                                            .font_family(SharedString::from(
+                                                                self.fonts.text.clone(),
+                                                            ))
+                                                            .text_size(px(WRITING_FONT_SIZE))
+                                                            .into_any_element(),
+                                                    },
                                                 ),
                                             )
                                             .children(buffer.note_id.as_deref().and_then(|id| {
@@ -2777,6 +2807,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_note))
             .on_action(cx.listener(Self::open_daily_note))
             .on_action(cx.listener(Self::open_quick))
+            .on_action(cx.listener(Self::toggle_blocks))
             .on_action(cx.listener(Self::selection_to_note))
             .on_action(cx.listener(Self::reveal_vault))
             .on_action(cx.listener(Self::note_to_workspace))
@@ -3207,6 +3238,7 @@ fn main() -> std::process::ExitCode {
             KeyBinding::new("secondary-shift-n", NewNote, None),
             KeyBinding::new("secondary-shift-j", OpenDailyNote, None),
             KeyBinding::new("secondary-p", OpenQuick, None),
+            KeyBinding::new("secondary-shift-b", ToggleBlocks, None),
             KeyBinding::new("secondary-shift-f", ShowNotes, None),
             KeyBinding::new("secondary-shift-e", ExportPdf, None),
             KeyBinding::new("secondary-shift-t", ExportTypst, None),

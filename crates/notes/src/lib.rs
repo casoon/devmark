@@ -6,6 +6,7 @@
 //! Notiz-IDs sind Pfade relativ zum Vault mit `/` (`Projekte/Idee.md`); der Papierkorb liegt
 //! in `.trash/` im Vault.
 
+pub mod blocks;
 mod legacy;
 mod links;
 
