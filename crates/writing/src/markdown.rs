@@ -14,6 +14,7 @@ use pulldown_cmark::{
     Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, LinkType, Parser, Tag, TagEnd,
 };
 
+use crate::Warning;
 use crate::frontmatter::Metadata;
 use crate::math;
 
@@ -70,19 +71,25 @@ impl Options {
 pub struct Conversion {
     pub typst: String,
     pub metadata: Metadata,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Warning>,
 }
 
 pub fn markdown_to_typst(source: &str, options: &Options) -> Conversion {
     let source = source.strip_prefix('\u{feff}').unwrap_or(source);
     let (metadata, body) = split_frontmatter(source);
+    let frontmatter_lines = source[..source.len() - body.len()].matches('\n').count();
     let mut warnings = Vec::new();
-    let body = if options.mdx {
+    let (body, mdx_origins) = if options.mdx {
         preprocess_mdx(body, &mut warnings)
     } else {
-        body.to_string()
+        (body.to_string(), (0..=body.matches('\n').count()).collect())
     };
-    let body = preprocess_directives(&body);
+    let (body, directive_origins) = preprocess_directives(&body);
+    // Zeile im vorverarbeiteten Text → Zeile (ab 1) in der Quelldatei.
+    let line_origins = directive_origins
+        .iter()
+        .map(|&line| frontmatter_lines + mdx_origins.get(line).copied().unwrap_or(line) + 1)
+        .collect();
 
     let lang = metadata
         .lang
@@ -91,8 +98,31 @@ pub fn markdown_to_typst(source: &str, options: &Options) -> Conversion {
         .map(str::to_ascii_lowercase)
         .unwrap_or_else(|| options.lang.clone());
 
+    let accent = metadata.accent.as_deref().and_then(|value| {
+        let line = source[..source.len() - body.len()]
+            .lines()
+            .position(|l| l.trim_start().to_ascii_lowercase().starts_with("accent"))
+            .map(|ix| ix + 1);
+        let warn = |message: String| Warning { line, message };
+        let Some(rgb) = parse_hex_color(value) else {
+            warnings.push(warn(format!(
+                "Akzentfarbe „{value}“ nicht erkannt (erwartet z. B. \"#0a7f6f\") – ignoriert."
+            )));
+            return None;
+        };
+        let contrast = contrast_on_white(rgb);
+        if contrast < 4.5 {
+            let ratio = format!("{contrast:.1}").replace('.', ",");
+            warnings.push(warn(format!(
+                "Akzentfarbe „{value}“ hat zu wenig Kontrast zu Papierweiß ({ratio}:1, nötig sind 4,5:1) – Überschriften und Links sind schwer lesbar."
+            )));
+        }
+        Some(format!("#{:02x}{:02x}{:02x}", rgb.0, rgb.1, rgb.2))
+    });
+
     let mut renderer = Renderer::new(options);
     renderer.warnings = warnings;
+    renderer.line_origins = line_origins;
     renderer.render_markdown(&body);
     let body = renderer.finish_body();
 
@@ -115,7 +145,7 @@ pub fn markdown_to_typst(source: &str, options: &Options) -> Conversion {
 // ---------------------------------------------------------------------------
 // Frontmatter und MDX-Vorverarbeitung
 
-fn split_frontmatter(source: &str) -> (Metadata, &str) {
+pub(crate) fn split_frontmatter(source: &str) -> (Metadata, &str) {
     for (fence, parse) in [
         ("---", Metadata::parse_yaml as fn(&str) -> Metadata),
         ("+++", Metadata::parse_toml),
@@ -142,8 +172,20 @@ fn split_frontmatter(source: &str) -> (Metadata, &str) {
     (Metadata::default(), source)
 }
 
-fn preprocess_mdx(body: &str, warnings: &mut Vec<String>) -> String {
+/// Hängt `text` an `out` an und merkt für jede darin beginnende Zeile die Ursprungszeile
+/// `origin` – so lassen sich Hinweise nach der Vorverarbeitung der Quellzeile zuordnen.
+fn push_tracked(out: &mut String, origins: &mut Vec<usize>, text: &str, origin: usize) {
+    for (ix, part) in text.split_inclusive('\n').enumerate() {
+        if (ix > 0 || out.is_empty() || out.ends_with('\n')) && !part.is_empty() {
+            origins.push(origin);
+        }
+        out.push_str(part);
+    }
+}
+
+pub(crate) fn preprocess_mdx(body: &str, warnings: &mut Vec<Warning>) -> (String, Vec<usize>) {
     let mut out = String::with_capacity(body.len());
+    let mut origins = Vec::new();
     let mut fence: Option<String> = None;
     let mut math_block = false;
     let mut skipping_statement = 0i32; // Klammertiefe eines mehrzeiligen import/export
@@ -153,7 +195,7 @@ fn preprocess_mdx(body: &str, warnings: &mut Vec<String>) -> String {
     let mut removed_statements = 0;
     let mut removed_expressions = 0;
 
-    for line in body.split_inclusive('\n') {
+    for (line_no, line) in body.split_inclusive('\n').enumerate() {
         let trimmed = line.trim_start();
         if let Some(open) = &fence {
             if trimmed.starts_with(open.as_str())
@@ -161,7 +203,7 @@ fn preprocess_mdx(body: &str, warnings: &mut Vec<String>) -> String {
             {
                 fence = None;
             }
-            out.push_str(line);
+            push_tracked(&mut out, &mut origins, line, line_no);
             continue;
         }
         if skipping_statement > 0 {
@@ -175,7 +217,7 @@ fn preprocess_mdx(body: &str, warnings: &mut Vec<String>) -> String {
                     .take_while(|&c| c == '`' || c == '~')
                     .collect();
                 fence = Some(marker);
-                out.push_str(line);
+                push_tracked(&mut out, &mut origins, line, line_no);
                 continue;
             }
             if trimmed.starts_with("$$") {
@@ -185,11 +227,11 @@ fn preprocess_mdx(body: &str, warnings: &mut Vec<String>) -> String {
                 if !single_line {
                     math_block = !math_block;
                 }
-                out.push_str(line);
+                push_tracked(&mut out, &mut origins, line, line_no);
                 continue;
             }
             if math_block {
-                out.push_str(line);
+                push_tracked(&mut out, &mut origins, line, line_no);
                 continue;
             }
             if !line.starts_with([' ', '\t'])
@@ -326,29 +368,30 @@ fn preprocess_mdx(body: &str, warnings: &mut Vec<String>) -> String {
         if cleaned.trim().is_empty() && !line.trim().is_empty() {
             continue;
         }
-        out.push_str(&cleaned);
+        push_tracked(&mut out, &mut origins, &cleaned, line_no);
     }
 
     if removed_statements > 0 {
-        warnings.push(format!(
+        warnings.push(Warning::new(format!(
             "MDX: {removed_statements} import/export-Anweisung(en) entfernt."
-        ));
+        )));
     }
     if removed_expressions > 0 {
-        warnings.push(format!(
+        warnings.push(Warning::new(format!(
             "MDX: {removed_expressions} JavaScript-Ausdruck/Ausdrücke {{…}} entfernt."
-        ));
+        )));
     }
-    out
+    (out, origins)
 }
 
 /// Container-Direktiven (Docusaurus, VitePress, Starlight): `:::tip Titel` … `:::`
 /// → `<Callout>`, das der Renderer als Hinweisbox setzt.
-fn preprocess_directives(body: &str) -> String {
+pub(crate) fn preprocess_directives(body: &str) -> (String, Vec<usize>) {
     let mut out = String::with_capacity(body.len());
+    let mut origins = Vec::new();
     let mut fence: Option<String> = None;
     let mut open = 0usize;
-    for line in body.split_inclusive('\n') {
+    for (line_no, line) in body.split_inclusive('\n').enumerate() {
         let trimmed = line.trim();
         if let Some(marker) = &fence {
             if trimmed.starts_with(marker.as_str())
@@ -356,7 +399,7 @@ fn preprocess_directives(body: &str) -> String {
             {
                 fence = None;
             }
-            out.push_str(line);
+            push_tracked(&mut out, &mut origins, line, line_no);
             continue;
         }
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
@@ -366,7 +409,7 @@ fn preprocess_directives(body: &str) -> String {
                     .take_while(|&c| c == '`' || c == '~')
                     .collect(),
             );
-            out.push_str(line);
+            push_tracked(&mut out, &mut origins, line, line_no);
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix(":::") {
@@ -374,7 +417,7 @@ fn preprocess_directives(body: &str) -> String {
             if rest.is_empty() {
                 if open > 0 {
                     open -= 1;
-                    out.push_str("\n</Callout>\n\n");
+                    push_tracked(&mut out, &mut origins, "\n</Callout>\n\n", line_no);
                     continue;
                 }
             } else {
@@ -398,17 +441,23 @@ fn preprocess_directives(body: &str) -> String {
                     } else {
                         format!(" title=\"{title}\"")
                     };
-                    out.push_str(&format!("\n<Callout type=\"{kind}\"{title}>\n\n"));
+                    push_tracked(
+                        &mut out,
+                        &mut origins,
+                        &format!("\n<Callout type=\"{kind}\"{title}>\n\n"),
+                        line_no,
+                    );
                     continue;
                 }
             }
         }
-        out.push_str(line);
+        push_tracked(&mut out, &mut origins, line, line_no);
     }
+    let last = origins.last().copied().unwrap_or(0);
     for _ in 0..open {
-        out.push_str("\n</Callout>\n");
+        push_tracked(&mut out, &mut origins, "\n</Callout>\n", last);
     }
-    out
+    (out, origins)
 }
 
 fn bracket_balance(line: &str) -> i32 {
@@ -451,7 +500,7 @@ fn matching_brace(chars: &[char]) -> Option<usize> {
 // ---------------------------------------------------------------------------
 // Renderer
 
-fn parser_options() -> pulldown_cmark::Options {
+pub(crate) fn parser_options() -> pulldown_cmark::Options {
     use pulldown_cmark::Options as O;
     O::ENABLE_TABLES
         | O::ENABLE_FOOTNOTES
@@ -504,7 +553,11 @@ struct OpenHtml {
 struct Renderer<'a> {
     options: &'a Options,
     frames: Vec<(Frame, String)>,
-    warnings: Vec<String>,
+    warnings: Vec<Warning>,
+    /// Zeile im vorverarbeiteten Text → Quellzeile (ab 1).
+    line_origins: Vec<usize>,
+    /// Quellzeile des gerade verarbeiteten Blocks; `None` nach dem Durchlauf.
+    line: Option<usize>,
     warned: HashSet<String>,
     footnotes: HashMap<String, String>,
     slugs: HashMap<String, usize>,
@@ -533,6 +586,8 @@ impl<'a> Renderer<'a> {
             options,
             frames: vec![(Frame::Root, String::new())],
             warnings: Vec::new(),
+            line_origins: Vec::new(),
+            line: None,
             warned: HashSet::new(),
             footnotes: HashMap::new(),
             slugs: HashMap::new(),
@@ -550,9 +605,16 @@ impl<'a> Renderer<'a> {
         }
     }
 
+    fn warn(&mut self, message: String) {
+        self.warnings.push(Warning {
+            line: self.line,
+            message,
+        });
+    }
+
     fn warn_once(&mut self, key: &str, message: String) {
         if self.warned.insert(key.to_string()) {
-            self.warnings.push(message);
+            self.warn(message);
         }
     }
 
@@ -625,13 +687,32 @@ impl<'a> Renderer<'a> {
     }
 
     fn render_markdown(&mut self, markdown: &str) {
-        let events: Vec<Event> = Parser::new_ext(markdown, parser_options()).collect();
-        self.render_events(&events);
+        let (events, offsets): (Vec<Event>, Vec<usize>) =
+            Parser::new_ext(markdown, parser_options())
+                .into_offset_iter()
+                .map(|(event, range)| (event, range.start))
+                .unzip();
+        let line_starts: Vec<usize> = std::iter::once(0)
+            .chain(markdown.match_indices('\n').map(|(ix, _)| ix + 1))
+            .collect();
+        let lines: Vec<usize> = offsets
+            .iter()
+            .map(|&offset| {
+                let line = line_starts.partition_point(|&start| start <= offset) - 1;
+                self.line_origins.get(line).copied().unwrap_or(line + 1)
+            })
+            .collect();
+        self.render_events(&events, Some(&lines));
+        self.line = None;
     }
 
-    fn render_events(&mut self, events: &[Event]) {
+    /// `lines`: Quellzeile je Ereignis (nur auf oberster Ebene bekannt).
+    fn render_events(&mut self, events: &[Event], lines: Option<&[usize]>) {
         let mut i = 0;
         while i < events.len() {
+            if let Some(lines) = lines {
+                self.line = Some(lines[i]);
+            }
             if let Some(skip) = self.try_figure(&events[i..]) {
                 i += skip;
                 continue;
@@ -1036,7 +1117,7 @@ impl<'a> Renderer<'a> {
             }
             Ok(_) => {}
             Err(err) => {
-                self.warnings.push(format!(
+                self.warn(format!(
                     "Formel nicht umwandelbar, als LaTeX-Code übernommen: {} ({})",
                     latex.trim(),
                     err.lines().next().unwrap_or_default()
@@ -1203,9 +1284,9 @@ impl<'a> Renderer<'a> {
             == 1
             && !self.at_line_start();
         if inline {
-            self.render_events(&events[1..events.len() - 1]);
+            self.render_events(&events[1..events.len() - 1], None);
         } else {
-            self.render_events(&events);
+            self.render_events(&events, None);
         }
     }
 
@@ -1430,7 +1511,7 @@ impl<'a> Renderer<'a> {
             .cloned()
             .collect();
         for label in missing {
-            self.warnings.push(format!(
+            self.warn(format!(
                 "Interner Link auf unbekannten Abschnitt „#{label}“ – als Text übernommen."
             ));
             body = body.replace(&format!("#link(<{label}>)["), "#[");
@@ -1455,16 +1536,14 @@ impl<'a> Renderer<'a> {
                 used.insert(label.clone());
                 format!("#footnote[{text}]<{typst_label}>")
             } else {
-                self.warnings
-                    .push(format!("Fußnote „{label}“ ohne Definition."));
+                self.warn(format!("Fußnote „{label}“ ohne Definition."));
                 format!("\\[^{}\\]", escape_markup(&label, false, false))
             };
             body.replace_range(start..end, &replacement);
         }
         let unused = self.footnotes.keys().filter(|k| !used.contains(*k)).count();
         if unused > 0 {
-            self.warnings
-                .push(format!("{unused} Fußnote(n) ohne Verweis weggelassen."));
+            self.warn(format!("{unused} Fußnote(n) ohne Verweis weggelassen."));
         }
         body.trim().to_string()
     }
@@ -1521,25 +1600,54 @@ impl<'a> Renderer<'a> {
             out.push_str("#set heading(numbering: \"1.1\")\n");
         }
         out.push_str("#show heading: set block(above: 1.4em, below: 0.8em)\n");
+        let accent = meta
+            .accent
+            .as_deref()
+            .and_then(parse_hex_color)
+            .map(|(r, g, b)| format!("rgb(\"#{r:02x}{g:02x}{b:02x}\")"));
+        if let Some(accent) = &accent {
+            out.push_str(&format!("#let accent = {accent}\n"));
+            out.push_str("#show heading: set text(fill: accent)\n");
+        }
         out.push_str("#show raw.where(block: true): set block(fill: luma(246), inset: 10pt, radius: 3pt, width: 100%)\n");
-        out.push_str("#show link: set text(fill: rgb(\"#1a5fb4\"))\n");
+        if accent.is_some() {
+            out.push_str("#show link: set text(fill: accent)\n");
+        } else {
+            out.push_str("#show link: set text(fill: rgb(\"#1a5fb4\"))\n");
+        }
         if body.contains("#quote(block: true)") {
             out.push_str("#show quote.where(block: true): it => block(inset: (left: 12pt, y: 2pt), stroke: (left: 2pt + luma(200)), it.body)\n");
         }
         if self.has_table {
             out.push_str("#set table(stroke: 0.5pt + luma(190), inset: 6pt)\n");
-            out.push_str("#show table.cell.where(y: 0): set text(weight: \"bold\")\n");
+            if accent.is_some() {
+                out.push_str("#set table(fill: (_, y) => if y == 0 { accent.lighten(88%) })\n");
+                out.push_str(
+                    "#show table.cell.where(y: 0): set text(weight: \"bold\", fill: accent.darken(20%))\n",
+                );
+            } else {
+                out.push_str("#show table.cell.where(y: 0): set text(weight: \"bold\")\n");
+            }
         }
 
         let mut helpers = String::new();
         if self.needs.contains("callout") {
-            let (note, tip, important, warning, caution) = if german {
-                ("Hinweis", "Tipp", "Wichtig", "Warnung", "Vorsicht")
+            let label = |kind| callout_label(kind, german).unwrap_or_default();
+            let (note, tip, important, warning, caution) = (
+                label("note"),
+                label("tip"),
+                label("important"),
+                label("warning"),
+                label("caution"),
+            );
+            // Hinweise in der Akzentfarbe; Tipp/Warnung/Vorsicht behalten ihre Signalfarben.
+            let note_color = if accent.is_some() {
+                "accent"
             } else {
-                ("Note", "Tip", "Important", "Warning", "Caution")
+                "rgb(\"#0969da\")"
             };
             helpers.push_str(&format!(
-                "#let callout(kind: \"note\", title: none, body) = {{\n  let styles = (\n    note: (rgb(\"#0969da\"), [{note}]),\n    tip: (rgb(\"#1a7f37\"), [{tip}]),\n    important: (rgb(\"#8250df\"), [{important}]),\n    warning: (rgb(\"#9a6700\"), [{warning}]),\n    caution: (rgb(\"#cf222e\"), [{caution}]),\n    details: (luma(110), none),\n  )\n  let (accent, label) = styles.at(kind, default: styles.note)\n  let heading = if title != none {{ title }} else {{ label }}\n  block(\n    width: 100%,\n    inset: (left: 12pt, rest: 10pt),\n    stroke: (left: 3pt + accent),\n    fill: accent.lighten(93%),\n    radius: (right: 3pt),\n    {{\n      if heading != none {{ text(weight: \"bold\", fill: accent, heading); parbreak() }}\n      body\n    }},\n  )\n}}\n"
+                "#let callout(kind: \"note\", title: none, body) = {{\n  let styles = (\n    note: ({note_color}, [{note}]),\n    tip: (rgb(\"#1a7f37\"), [{tip}]),\n    important: (rgb(\"#8250df\"), [{important}]),\n    warning: (rgb(\"#9a6700\"), [{warning}]),\n    caution: (rgb(\"#cf222e\"), [{caution}]),\n    details: (luma(110), none),\n  )\n  let (accent, label) = styles.at(kind, default: styles.note)\n  let heading = if title != none {{ title }} else {{ label }}\n  block(\n    width: 100%,\n    inset: (left: 12pt, rest: 10pt),\n    stroke: (left: 3pt + accent),\n    fill: accent.lighten(93%),\n    radius: (right: 3pt),\n    {{\n      if heading != none {{ text(weight: \"bold\", fill: accent, heading); parbreak() }}\n      body\n    }},\n  )\n}}\n"
             ));
         }
         if self.needs.contains("task") {
@@ -1763,7 +1871,7 @@ fn longest_run(text: &str, ch: char) -> usize {
     best
 }
 
-fn plain_text(events: &[Event]) -> String {
+pub(crate) fn plain_text(events: &[Event]) -> String {
     let mut out = String::new();
     for event in events {
         match event {
@@ -1775,7 +1883,7 @@ fn plain_text(events: &[Event]) -> String {
     out
 }
 
-fn callout_kind(kind: BlockQuoteKind) -> &'static str {
+pub(crate) fn callout_kind(kind: BlockQuoteKind) -> &'static str {
     match kind {
         BlockQuoteKind::Note => "note",
         BlockQuoteKind::Tip => "tip",
@@ -1785,8 +1893,60 @@ fn callout_kind(kind: BlockQuoteKind) -> &'static str {
     }
 }
 
+/// `#rgb` oder `#rrggbb` (das `#` darf fehlen) → RGB.
+fn parse_hex_color(value: &str) -> Option<(u8, u8, u8)> {
+    let hex = value.trim().trim_start_matches('#');
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let channel = |s: &str| u8::from_str_radix(s, 16).ok();
+    match hex.len() {
+        3 => {
+            let mut digits = hex.chars().map(|c| channel(&c.to_string().repeat(2)));
+            Some((digits.next()??, digits.next()??, digits.next()??))
+        }
+        6 => Some((
+            channel(&hex[0..2])?,
+            channel(&hex[2..4])?,
+            channel(&hex[4..6])?,
+        )),
+        _ => None,
+    }
+}
+
+/// Kontrastverhältnis (WCAG) einer Farbe zu Weiß, 1 bis 21.
+fn contrast_on_white((r, g, b): (u8, u8, u8)) -> f64 {
+    let linear = |c: u8| {
+        let c = f64::from(c) / 255.0;
+        if c <= 0.039_28 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance = 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+    1.05 / (luminance + 0.05)
+}
+
+/// Überschrift einer Hinweisbox ohne eigenen Titel; `details` hat keine.
+pub(crate) fn callout_label(kind: &str, german: bool) -> Option<&'static str> {
+    Some(match (kind, german) {
+        ("note", true) => "Hinweis",
+        ("tip", true) => "Tipp",
+        ("important", true) => "Wichtig",
+        ("warning", true) => "Warnung",
+        ("caution", true) => "Vorsicht",
+        ("note", false) => "Note",
+        ("tip", false) => "Tip",
+        ("important", false) => "Important",
+        ("warning", false) => "Warning",
+        ("caution", false) => "Caution",
+        _ => return None,
+    })
+}
+
 /// Bekannte Hinweis-Komponenten (MDX: Docusaurus, Starlight, Nextra, Mintlify …).
-fn admonition_kind(name: &str, variant: Option<&str>) -> Option<&'static str> {
+pub(crate) fn admonition_kind(name: &str, variant: Option<&str>) -> Option<&'static str> {
     let by_name = |n: &str| -> Option<&'static str> {
         Some(match n.to_ascii_lowercase().as_str() {
             "note" | "info" | "information" | "default" | "secondary" => "note",
@@ -1807,7 +1967,7 @@ fn admonition_kind(name: &str, variant: Option<&str>) -> Option<&'static str> {
     }
 }
 
-fn is_html_element(name: &str) -> bool {
+pub(crate) fn is_html_element(name: &str) -> bool {
     matches!(
         name,
         "a" | "abbr"
@@ -1955,7 +2115,7 @@ fn typst_date(date: &str) -> Option<String> {
     ))
 }
 
-fn percent_decode(text: &str) -> String {
+pub(crate) fn percent_decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -1984,7 +2144,7 @@ fn decode_entities(text: &str) -> String {
 }
 
 /// Relativer Pfad von `dir` zu `target` (beide absolut oder beide relativ).
-fn relative_path(target: &Path, dir: &Path) -> Option<PathBuf> {
+pub(crate) fn relative_path(target: &Path, dir: &Path) -> Option<PathBuf> {
     let target = normalize(target);
     let dir = normalize(dir);
     let target_parts: Vec<Component> = target.components().collect();
@@ -2007,7 +2167,7 @@ fn relative_path(target: &Path, dir: &Path) -> Option<PathBuf> {
     Some(out)
 }
 
-fn normalize(path: &Path) -> PathBuf {
+pub(crate) fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {
@@ -2025,7 +2185,7 @@ fn normalize(path: &Path) -> PathBuf {
 // Mini-HTML-Tokenizer (für HTML-Blöcke und JSX-Tags)
 
 #[derive(Debug, PartialEq)]
-enum HtmlToken {
+pub(crate) enum HtmlToken {
     Open {
         name: String,
         attrs: Vec<(String, String)>,
@@ -2038,7 +2198,7 @@ enum HtmlToken {
     Comment(String),
 }
 
-fn tokenize_html(html: &str) -> Vec<HtmlToken> {
+pub(crate) fn tokenize_html(html: &str) -> Vec<HtmlToken> {
     let mut tokens = Vec::new();
     let mut text = String::new();
     let mut rest = html;
@@ -2410,6 +2570,71 @@ mod tests {
             conversion.typst,
             "#callout(kind: \"note\")[\nKurzer #emph[Hinweis]\n]\n"
         );
+    }
+
+    #[test]
+    fn warnings_carry_source_line() {
+        let options = Options {
+            standalone: false,
+            ..Options::default()
+        };
+        let source =
+            "---\ntitle: T\n---\n:::tip\nText\n:::\n\n![x](http://a/b.png)\n\n[weg](#nirgends)\n";
+        let warnings = markdown_to_typst(source, &options).warnings;
+        assert_eq!(warnings[0].line, Some(8), "{warnings:?}");
+        assert!(warnings[0].message.contains("Entferntes Bild"));
+        // Interne Links werden erst am Ende geprüft – ohne Zeile.
+        assert_eq!(warnings[1].line, None);
+
+        let conversion = mdx("import A from './a'\n\n<Foo>\n\nInhalt\n\n</Foo>\n");
+        let foo = conversion
+            .warnings
+            .iter()
+            .find(|w| w.message.contains("<Foo>"))
+            .unwrap();
+        assert_eq!(foo.line, Some(3));
+        assert_eq!(foo.to_string(), format!("Zeile 3: {}", foo.message));
+    }
+
+    #[test]
+    fn accent_color_from_frontmatter() {
+        let options = Options::default();
+        let conversion = markdown_to_typst(
+            "---\ntitle: T\naccent: \"#0A7F6F\"\n---\n> [!NOTE]\n> Box\n\n| A |\n|---|\n| 1 |\n",
+            &options,
+        );
+        assert!(conversion.warnings.is_empty(), "{:?}", conversion.warnings);
+        let typst = &conversion.typst;
+        assert!(typst.contains("#let accent = rgb(\"#0a7f6f\")"));
+        assert!(typst.contains("#show heading: set text(fill: accent)"));
+        assert!(typst.contains("#show link: set text(fill: accent)"));
+        assert!(typst.contains("note: (accent, [Hinweis])"));
+        assert!(typst.contains("fill: accent.darken(20%)"));
+        crate::compile_pdf(typst, Path::new("/tmp/devmark-accent.typ")).unwrap();
+
+        let pale = markdown_to_typst("---\naccent: \"#ffd700\"\n---\nText\n", &options);
+        assert_eq!(pale.warnings.len(), 1);
+        assert_eq!(pale.warnings[0].line, Some(2));
+        assert!(
+            pale.warnings[0].message.contains("(1,4:1"),
+            "{:?}",
+            pale.warnings
+        );
+        assert!(pale.typst.contains("#let accent"));
+
+        let broken = markdown_to_typst("---\naccent: grün\n---\nText\n", &options);
+        assert!(broken.warnings[0].message.contains("nicht erkannt"));
+        assert!(!broken.typst.contains("accent"));
+    }
+
+    #[test]
+    fn hex_colors_and_contrast() {
+        assert_eq!(parse_hex_color("#0a7f6f"), Some((10, 127, 111)));
+        assert_eq!(parse_hex_color("f80"), Some((255, 136, 0)));
+        assert_eq!(parse_hex_color("#12345"), None);
+        assert!((contrast_on_white((0, 0, 0)) - 21.0).abs() < 0.01);
+        assert!((contrast_on_white((255, 255, 255)) - 1.0).abs() < 0.01);
+        assert!(contrast_on_white((10, 127, 111)) > 4.5);
     }
 
     #[test]

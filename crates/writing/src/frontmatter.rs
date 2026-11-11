@@ -15,6 +15,8 @@ pub struct Metadata {
     pub toc: Option<bool>,
     pub numbering: Option<bool>,
     pub paper: Option<String>,
+    /// Akzentfarbe für Überschriften, Links, Hinweisboxen und Tabellenkopf (`#rrggbb`).
+    pub accent: Option<String>,
 }
 
 impl Metadata {
@@ -45,6 +47,7 @@ impl Metadata {
                     meta.numbering = value.bool()
                 }
                 "paper" | "papersize" => meta.paper = value.scalar(),
+                "accent" | "accent-color" | "accent_color" => meta.accent = value.scalar(),
                 _ => {}
             }
         }

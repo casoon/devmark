@@ -8,7 +8,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use typst::diag::{FileError, FileResult, PackageError, Severity, SourceDiagnostic};
+use typst::diag::{FileError, FileResult, PackageError, SourceDiagnostic};
 use typst::foundations::{Bytes, Datetime, Duration};
 use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook};
@@ -19,6 +19,8 @@ use typst_kit::fonts::{self, FontStore};
 use typst_kit::packages::FsPackages;
 use typst_layout::PagedDocument;
 
+use crate::Warning;
+
 /// Kompiliert `source` (Inhalt der Datei `main_path`) zu PDF-Bytes.
 ///
 /// `main_path` muss nicht existieren – so lässt sich auch ungespeicherter Editor-Inhalt
@@ -26,7 +28,7 @@ use typst_layout::PagedDocument;
 pub fn compile_pdf(source: &str, main_path: &Path) -> Result<Compiled, CompileError> {
     let world = DevmarkWorld::new(source, main_path);
     let warned = typst::compile::<PagedDocument>(&world);
-    let warnings = warned.warnings.iter().map(|d| world.describe(d)).collect();
+    let warnings = warned.warnings.iter().map(|d| world.warning(d)).collect();
     let document = warned.output.map_err(|errors| {
         CompileError::Typst(errors.iter().map(|d| world.describe(d)).collect())
     })?;
@@ -53,7 +55,7 @@ pub fn render_pages(
 ) -> Result<Rendered, CompileError> {
     let world = DevmarkWorld::new(source, main_path);
     let warned = typst::compile::<PagedDocument>(&world);
-    let warnings = warned.warnings.iter().map(|d| world.describe(d)).collect();
+    let warnings = warned.warnings.iter().map(|d| world.warning(d)).collect();
     let document = warned.output.map_err(|errors| {
         CompileError::Typst(errors.iter().map(|d| world.describe(d)).collect())
     })?;
@@ -84,7 +86,7 @@ pub fn render_pages(
 pub struct Rendered {
     pub pages: Vec<RenderedPage>,
     pub total_pages: usize,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Warning>,
 }
 
 pub struct RenderedPage {
@@ -96,7 +98,7 @@ pub struct RenderedPage {
 pub struct Compiled {
     pub pdf: Vec<u8>,
     pub pages: usize,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Warning>,
 }
 
 #[derive(Debug)]
@@ -168,30 +170,50 @@ impl DevmarkWorld {
 
     /// Fehlermeldung mit Zeilenangabe, sofern sie in der Hauptdatei liegt.
     fn describe(&self, diagnostic: &SourceDiagnostic) -> String {
-        let kind = match diagnostic.severity {
-            Severity::Error => "Fehler",
-            Severity::Warning => "Warnung",
+        let location = match self.location(diagnostic) {
+            Some((file, line)) => format!(" ({file}, Zeile {line})"),
+            None => String::new(),
         };
-        let mut location = String::new();
-        if let (Some(id), Some(range)) = (diagnostic.span.id(), self.range(diagnostic.span))
-            && let Ok(source) = self.source(id)
-            && let Some(line) = source.lines().byte_to_line(range.start)
-        {
-            let file = if id == self.main {
-                self.main_file
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default()
-            } else {
-                format!("{:?}", id.vpath())
-            };
-            location = format!(" ({file}, Zeile {})", line + 1);
+        format!("Fehler{location}: {}", self.message(diagnostic))
+    }
+
+    /// Warnung; liegt sie in der Hauptdatei, trägt sie deren Zeile.
+    fn warning(&self, diagnostic: &SourceDiagnostic) -> Warning {
+        match self.location(diagnostic) {
+            Some((_, line)) if diagnostic.span.id() == Some(self.main) => Warning {
+                line: Some(line),
+                message: self.message(diagnostic),
+            },
+            Some((file, line)) => Warning::new(format!(
+                "{file}, Zeile {line}: {}",
+                self.message(diagnostic)
+            )),
+            None => Warning::new(self.message(diagnostic)),
         }
-        let mut message = format!("{kind}{location}: {}", diagnostic.message);
+    }
+
+    fn message(&self, diagnostic: &SourceDiagnostic) -> String {
+        let mut message = diagnostic.message.to_string();
         for hint in &diagnostic.hints {
             message.push_str(&format!("\n  Hinweis: {}", hint.v));
         }
         message
+    }
+
+    /// Datei und Zeile (ab 1) einer Meldung.
+    fn location(&self, diagnostic: &SourceDiagnostic) -> Option<(String, usize)> {
+        let id = diagnostic.span.id()?;
+        let range = self.range(diagnostic.span)?;
+        let line = self.source(id).ok()?.lines().byte_to_line(range.start)?;
+        let file = if id == self.main {
+            self.main_file
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default()
+        } else {
+            format!("{:?}", id.vpath())
+        };
+        Some((file, line + 1))
     }
 }
 

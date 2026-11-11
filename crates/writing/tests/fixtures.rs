@@ -2,9 +2,9 @@
 
 use std::path::Path;
 
-use devmark_writing::{Options, compile_pdf, markdown_to_typst};
+use devmark_writing::{Options, Warning, compile_pdf, markdown_to_typst};
 
-fn convert_and_compile(name: &str) -> (String, Vec<String>) {
+fn convert_and_compile(name: &str) -> (String, Vec<Warning>) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(name);

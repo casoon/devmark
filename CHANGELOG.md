@@ -7,8 +7,11 @@ Alle nennenswerten Änderungen an DevMark stehen hier. DevMark folgt
 
 ### Added
 
-- **Schreiben:** Über dem Text stehen Speicherstand und Wortzahl, bei Notizen zusätzlich die `#tags` (Klick filtert die Notizliste).
+- **Schreiben:** Über dem Text stehen Speicherstand, Wortzahl und Lesezeit, bei Notizen zusätzlich die `#tags` (Klick filtert die Notizliste).
 - **Schreiben:** Gliederung am rechten Rand – ein Strich je Überschrift, Klick springt hin.
+- **Druck:** Die Kopfzeile der Druckvorschau zeigt Quelle → Ziel und den Bau-Status (Satzzeit bzw. Zahl der Hinweise). Klick listet die Hinweise; solche mit Zeilenangabe springen an die Stelle im Text. Auch `devmark-typst` nennt bei Hinweisen die Zeile.
+- **Druck:** `accent: "#0a7f6f"` im Frontmatter färbt Überschriften, Links, Hinweisboxen und Tabellenkopf im PDF; bei zu wenig Kontrast zu Papierweiß erscheint ein Hinweis.
+- **Export:** Datei → „Als HTML exportieren …“ und Notizen → „Notizordner als HTML exportieren …“ erzeugen statische Seiten mit einem Stylesheet, offline und ohne JavaScript. Verknüpfungen zwischen Notizen werden zu relativen `.html`-Links, Ordner bleiben Ordner, Hinweisboxen sehen aus wie im PDF; bei mehreren Seiten entsteht eine Übersicht `index.html`.
 - **Notizen:** Navigation „Favoriten“ zeigt nur markierte Notizen.
 - **Notizen:** Menü Notizen → „Notiz im Workspace speichern …“ legt die aktive Notiz als Markdown-Datei im Workspace ab, „Notizordner im Finder zeigen“ und „Notizordner wählen …“ führen zum bzw. wechseln den Ordner.
 - **Workspace:** Umschalter oben in der Navigation mit Ordnername, zuletzt geöffneten Workspaces und „Ordner öffnen …“; Menü Datei → „Workspace öffnen …“.

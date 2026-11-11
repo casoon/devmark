@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use devmark_writing::authoring::{self, Action as Format, Syntax, Tabstops};
 use devmark_writing::templates::{DocInfo, DocType};
@@ -50,6 +50,8 @@ actions!(
         NewDocument,
         ExportTypst,
         ExportPdf,
+        ExportHtml,
+        ExportNotesHtml,
         ToggleHelp,
         TogglePreview,
         NewNote,
@@ -295,6 +297,24 @@ impl DocStats {
     }
 }
 
+/// Lesezeit in Minuten bei rund 200 Wörtern pro Minute, mindestens eine.
+fn reading_minutes(words: usize) -> usize {
+    ((words + 100) / 200).max(1)
+}
+
+/// Tausender mit geschütztem Leerzeichen: 1240 → „1 240“.
+fn group_digits(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (ix, c) in digits.chars().enumerate() {
+        if ix > 0 && (digits.len() - ix) % 3 == 0 {
+            out.push('\u{00A0}');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Textspalte im Schreib-Layout: rund 70 Zeichen.
 const WRITING_COLUMN: f32 = 720.;
 const WRITING_FONT_SIZE: f32 = 17.;
@@ -338,6 +358,18 @@ struct Preview {
     pages: Vec<(Arc<Image>, f32)>,
     total_pages: usize,
     error: Option<String>,
+    /// Kopfzeile: „text.md → text.pdf“.
+    title: String,
+    /// Dauer des letzten Satzes.
+    elapsed: Option<Duration>,
+    warnings: Vec<PreviewWarning>,
+    show_warnings: bool,
+}
+
+/// Hinweis aus Umwandlung oder Satz; `line` (ab 0) zeigt in den Text im Editor.
+struct PreviewWarning {
+    text: String,
+    line: Option<u32>,
 }
 
 /// Vorschau-Auflösung: 1,5 Pixel pro Punkt ist auf Retina scharf genug und schnell.
@@ -908,25 +940,44 @@ impl Workspace {
             source = devmark_notes::strip_note_links(&source);
         }
         let path = buffer.path.clone();
+        let pdf_name = if buffer.note_id.is_some() {
+            format!("{}.pdf", buffer.label())
+        } else {
+            file_name(&path.with_extension("pdf"))
+        };
+        let title = format!("{} → {pdf_name}", buffer.label());
         self.preview_task = cx.spawn(async move |this, cx| {
             if !delay.is_zero() {
                 cx.background_executor().timer(delay).await;
             }
             let render_path = path.clone();
-            let result = cx
+            let (result, mut warnings, elapsed) = cx
                 .background_spawn(async move {
+                    let started = Instant::now();
+                    let mut warnings = Vec::new();
                     let (typst, main_path) = match syntax {
-                        Syntax::Markdown => (
-                            markdown_to_typst(&source, &Options::for_file(&render_path)).typst,
-                            render_path.with_extension("typ"),
-                        ),
+                        Syntax::Markdown => {
+                            let conversion =
+                                markdown_to_typst(&source, &Options::for_file(&render_path));
+                            warnings.extend(conversion.warnings.into_iter().map(|w| {
+                                PreviewWarning {
+                                    text: w.message,
+                                    line: w.line.map(|line| line.saturating_sub(1) as u32),
+                                }
+                            }));
+                            (conversion.typst, render_path.with_extension("typ"))
+                        }
                         Syntax::Typst => (source, render_path),
                     };
-                    render_pages(&typst, &main_path, PREVIEW_PIXEL_PER_PT, PREVIEW_MAX_PAGES)
+                    let result =
+                        render_pages(&typst, &main_path, PREVIEW_PIXEL_PER_PT, PREVIEW_MAX_PAGES);
+                    (result, warnings, started.elapsed())
                 })
                 .await;
             this.update(cx, |this, cx| {
                 let same_document = this.preview.path.as_ref() == Some(&path);
+                this.preview.title = title;
+                this.preview.elapsed = Some(elapsed);
                 match result {
                     Ok(rendered) => {
                         let pages = rendered
@@ -946,6 +997,17 @@ impl Workspace {
                         }
                         this.preview.total_pages = rendered.total_pages;
                         this.preview.error = None;
+                        // Zeilen im erzeugten Typst passen nur bei Typst-Dateien zum Editor.
+                        warnings.extend(rendered.warnings.into_iter().map(|w| match syntax {
+                            Syntax::Typst => PreviewWarning {
+                                text: w.message,
+                                line: w.line.map(|line| line.saturating_sub(1) as u32),
+                            },
+                            Syntax::Markdown => PreviewWarning {
+                                text: format!("Satz: {}", w.message),
+                                line: None,
+                            },
+                        }));
                     }
                     Err(err) => {
                         // Letzten guten Stand stehen lassen, Fehler darüber anzeigen.
@@ -957,6 +1019,10 @@ impl Workspace {
                         this.preview.error = Some(err.to_string());
                     }
                 }
+                if warnings.is_empty() {
+                    this.preview.show_warnings = false;
+                }
+                this.preview.warnings = warnings;
                 this.preview.path = Some(path);
                 cx.notify();
             })
@@ -1235,7 +1301,7 @@ impl Workspace {
                     .warnings
                     .iter()
                     .take(5)
-                    .cloned()
+                    .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join("\n• ")
             )
@@ -1332,6 +1398,102 @@ impl Workspace {
         }
         let pdf_path = path.with_extension("pdf");
         self.start_pdf_export(source, syntax, path, pdf_path, window, cx);
+    }
+
+    /// Aktives Markdown-Dokument als statische HTML-Seite in einen neuen Ordner.
+    fn export_html(&mut self, _: &ExportHtml, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(buffer) = self.active_buffer() else {
+            return;
+        };
+        if buffer.syntax != Some(Syntax::Markdown) {
+            window.push_notification(
+                Notification::info("HTML-Export gibt es für Markdown-Dateien und Notizen."),
+                cx,
+            );
+            return;
+        }
+        let source = buffer.editor.read(cx).value().to_string();
+        let path = buffer.path.clone();
+        let name = format!("{} (HTML)", buffer.label());
+        self.ask_export_path(
+            name,
+            move |this, target, window, cx| {
+                this.start_html_export(
+                    move || devmark_writing::html::export_document(&source, &path, &target),
+                    window,
+                    cx,
+                )
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Ganzer Notizordner als statische Seiten; Ordner bleiben Ordner.
+    fn export_notes_html(
+        &mut self,
+        _: &ExportNotesHtml,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_all_notes(cx);
+        let root = self
+            .notes
+            .as_ref()
+            .map(|state| state.notes.root().to_path_buf())
+            .unwrap_or_else(notes_ui::vault_dir);
+        let name = format!("{} (HTML)", file_name(&root));
+        self.ask_export_path(
+            name,
+            move |this, target, window, cx| {
+                this.start_html_export(
+                    move || {
+                        let sources = devmark_writing::html::collect_markdown(&root);
+                        devmark_writing::html::export_site(&root, &sources, &target)
+                    },
+                    window,
+                    cx,
+                )
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn start_html_export(
+        &mut self,
+        export: impl FnOnce() -> std::io::Result<devmark_writing::html::Export> + Send + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let task = cx.background_spawn(async move { export() });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(export) => {
+                    let pages = match export.pages {
+                        1 => "1 Seite".to_string(),
+                        n => format!("{n} Seiten"),
+                    };
+                    let mut message = format!("HTML-Export fertig ({pages}).");
+                    if !export.warnings.is_empty() {
+                        message.push_str(" Hinweise:");
+                        for (source, warning) in export.warnings.iter().take(5) {
+                            message.push_str(&format!("\n• {}: {warning}", file_name(source)));
+                        }
+                    }
+                    window.push_notification(Notification::success(message), cx);
+                    cx.open_with_system(&export.entry);
+                    this.refresh_tree(cx);
+                }
+                Err(err) => window.push_notification(
+                    Notification::error(format!("HTML-Export fehlgeschlagen: {err}")),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn start_pdf_export(
@@ -1639,8 +1801,9 @@ impl Workspace {
             (false, _, None) => String::new(),
         };
         let words = match buffer.stats.words {
-            1 => "1 Wort".to_string(),
-            n => format!("{n} Wörter"),
+            0 => "0 Wörter".to_string(),
+            1 => "1 Wort · 1 min".to_string(),
+            n => format!("{} Wörter · {} min", group_digits(n), reading_minutes(n)),
         };
         let filter = self.notes.as_ref().and_then(|n| n.tag_filter.clone());
         let mut tags = h_flex().flex_1().min_w_0().flex_wrap().gap_1();
@@ -1798,10 +1961,107 @@ impl Workspace {
         list
     }
 
+    /// Kopfzeile der Vorschau: Quelle → Ziel, Bau-Status; Klick zeigt die Hinweise.
+    fn render_preview_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let preview = &self.preview;
+        let status = match (&preview.error, preview.warnings.len(), preview.elapsed) {
+            (Some(_), _, _) => "✗ Fehler beim Setzen".to_string(),
+            (None, _, None) => "wird gesetzt …".to_string(),
+            (None, 0, Some(elapsed)) => format!("✓ gesetzt in {} ms", elapsed.as_millis()),
+            (None, 1, Some(_)) => "⚠ 1 Hinweis".to_string(),
+            (None, n, Some(_)) => format!("⚠ {n} Hinweise"),
+        };
+        let status_color = match (&preview.error, preview.warnings.is_empty()) {
+            (Some(_), _) => cx.theme().danger,
+            (None, false) => cx.theme().warning,
+            (None, true) => cx.theme().muted_foreground,
+        };
+        let mut status = Button::new("preview-status")
+            .ghost()
+            .xsmall()
+            .text_color(status_color)
+            .label(status)
+            .selected(preview.show_warnings);
+        if !preview.warnings.is_empty() {
+            status = status
+                .tooltip("Hinweise zeigen")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.preview.show_warnings = !this.preview.show_warnings;
+                    cx.notify();
+                }));
+        }
+        let mut header = v_flex()
+            .flex_none()
+            .px_3()
+            .py_1()
+            .gap_1()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().muted)
+            .text_xs()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(preview.title.clone()),
+                    )
+                    .child(status),
+            );
+        if preview.show_warnings {
+            for (ix, warning) in preview.warnings.iter().enumerate() {
+                let text = match warning.line {
+                    Some(line) => format!("Zeile {}: {}", line + 1, warning.text),
+                    None => warning.text.clone(),
+                };
+                let mut row = div()
+                    .id(("preview-warning", ix))
+                    .px_1()
+                    .rounded(cx.theme().radius)
+                    .whitespace_normal()
+                    .child(text);
+                if let Some(line) = warning.line {
+                    row = row
+                        .cursor_pointer()
+                        .hover(|style| style.bg(cx.theme().accent))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.go_to_line(line, window, cx)
+                        }));
+                }
+                header = header.child(row);
+            }
+        }
+        header
+    }
+
+    /// Setzt den Cursor im aktiven Text an den Anfang von `line` (ab 0).
+    fn go_to_line(&mut self, line: u32, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(buffer) = self.active_buffer() else {
+            return;
+        };
+        buffer.editor.update(cx, |state, cx| {
+            state.set_cursor_position(lsp_types::Position::new(line, 0), window, cx);
+            state.focus(window, cx);
+        });
+    }
+
     fn render_preview(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .size_full()
+            .child(self.render_preview_header(cx))
+            .child(self.render_preview_pages(cx))
+    }
+
+    fn render_preview_pages(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut column = v_flex()
             .id("preview-panel")
-            .size_full()
+            .flex_1()
+            .min_h_0()
+            .w_full()
             .overflow_y_scroll()
             .p_4()
             .gap_4()
@@ -2248,6 +2508,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_document))
             .on_action(cx.listener(Self::export_typst))
             .on_action(cx.listener(Self::export_pdf))
+            .on_action(cx.listener(Self::export_html))
+            .on_action(cx.listener(Self::export_notes_html))
             .on_action(cx.listener(Self::next_placeholder))
             .on_action(cx.listener(Self::prev_placeholder))
             .on_action(cx.listener(Self::end_placeholders));
@@ -2581,6 +2843,7 @@ fn main() {
                 MenuItem::separator(),
                 MenuItem::action("Nach Typst umwandeln", ExportTypst),
                 MenuItem::action("Als PDF exportieren", ExportPdf),
+                MenuItem::action("Als HTML exportieren …", ExportHtml),
             ]),
             Menu::new("Format").items([
                 MenuItem::action("Fett", FormatBold),
@@ -2622,6 +2885,7 @@ fn main() {
                 MenuItem::separator(),
                 MenuItem::action("Notizordner im Finder zeigen", RevealVault),
                 MenuItem::action("Notizordner wählen …", ChooseVault),
+                MenuItem::action("Notizordner als HTML exportieren …", ExportNotesHtml),
                 MenuItem::action("Backup jetzt erstellen", BackupNow),
             ]),
             Menu::new("Ansicht").items([
@@ -2716,6 +2980,12 @@ mod tests {
             .collect();
         assert_eq!(outline, [(0, 1, "Titel"), (7, 2, "Unter")]);
         assert_eq!(stats.words, 10);
+        assert_eq!(super::reading_minutes(10), 1);
+        assert_eq!(super::reading_minutes(1240), 6);
+        assert_eq!(super::reading_minutes(1300), 7);
+        assert_eq!(super::group_digits(1240), "1\u{00A0}240");
+        assert_eq!(super::group_digits(999), "999");
+        assert_eq!(super::group_digits(1_234_567), "1\u{00A0}234\u{00A0}567");
         assert_eq!(stats.tags, ["tag"]);
         let typst =
             super::DocStats::of(Syntax::Typst, "= Kapitel\n== Abschnitt\n#set page()", false);
