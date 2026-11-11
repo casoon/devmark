@@ -7,8 +7,16 @@ All notable changes to DevMark are listed here. DevMark follows
 
 ### Changed
 
+- **Interface:** the window's title bar holds two groups of switches – list, split, focus and print preview, cheat sheet, note history – and the Typst, HTML and PDF exports; in a narrow window the switches show icons only. The status bar keeps only save state, word count and reading time.
+- **Interface:** “Document” and “Note” buttons at the top of the navigation create new entries; search moved to the top; larger icons and buttons throughout, with a teal accent for the main actions, headings in the editor and the dark theme.
+- **Interface:** every tab has its own close button.
+- **Notes:** the formatting bar now also shows for notes. Note rows show their tags; the selected row holds move, favorite and trash.
+- **Print:** the preview header names the PDF and shows the build status as a badge.
 - **Pages:** the project site uses the current shared theme (0.12.10).
 
+### Fixed
+
+- **Interface:** column widths stay intact after leaving focus mode or hiding the list, preview or cheat sheet.
 
 ## [0.2.0] - 2026-11-11
 

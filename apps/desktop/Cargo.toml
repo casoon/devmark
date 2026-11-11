@@ -13,4 +13,5 @@ devmark-writing = { path = "../../crates/writing" }
 futures = "0.3"
 gpui-kit.workspace = true
 lsp-types = "0.97.0"
+serde_json = "1"
 tree-sitter = "0.26.13"
