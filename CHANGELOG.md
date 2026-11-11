@@ -7,6 +7,7 @@ All notable changes to DevMark are listed here. DevMark follows
 
 ### Added
 
+- **Workspace:** quick open (`Cmd/Ctrl-P`) finds notes and workspace files by name or folder; “Neu: …“ creates a note. See [Quick open](https://casoon.github.io/devmark/docs/getting-started/first-steps/#quick-open).
 - **Notes:** nested tags (`#client/project`) show as a tree in the navigation; a parent tag also lists the notes of its sub-tags. See [Find](https://casoon.github.io/devmark/docs/guides/notes/#find).
 - **Notes:** “Heute“ (`Cmd/Ctrl-Shift-J`) opens today's note `Journal/<date>.md` and creates it if needed. See [Write](https://casoon.github.io/devmark/docs/guides/notes/).
 - **CLI:** `devmark --note "Text"` appends a dated entry to `Inbox.md` in the notes folder without opening a window. See [Capture from outside](https://casoon.github.io/devmark/docs/guides/notes/#capture-from-outside).

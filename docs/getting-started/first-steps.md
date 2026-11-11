@@ -28,6 +28,10 @@ The window has three columns:
 
 The title bar toggles the list, split view, focus mode, print preview and cheat sheet, and exports to Typst, HTML or PDF. `Cmd/Ctrl-Shift-L` hides the middle column, `Cmd/Ctrl-Shift-Enter` switches to focus mode, which shows only the text.
 
+## Quick open
+
+`Cmd/Ctrl-P` opens a list of all notes and all files of the workspace. Type a few letters of the name – or of the folder – to narrow it down; every word has to match. The arrow keys choose, `Enter` opens, `Esc` closes. If nothing matches, “Neu: …“ creates a note with what you typed as its title.
+
 ## Your first note
 
 `Cmd/Ctrl-Shift-N` creates a note. No file name needed: the first line becomes the title and the file name, and saving happens automatically. How notes are stored is described under [Notes](../../guides/notes/).

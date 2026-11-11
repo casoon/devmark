@@ -285,7 +285,7 @@ fn document_from_row(row: &Row) -> rusqlite::Result<Document> {
 }
 
 /// Ordner der ID (`a/b/x.md` → `a/b`).
-fn parent_of(id: &str) -> Option<String> {
+pub fn parent_of(id: &str) -> Option<String> {
     id.rsplit_once('/').map(|(dir, _)| dir.to_string())
 }
 

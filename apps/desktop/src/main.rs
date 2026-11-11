@@ -4,6 +4,7 @@
 mod assist;
 mod fonts;
 mod notes_ui;
+mod quick_open;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -50,6 +51,7 @@ actions!(
         Quit,
         NewDocument,
         OpenDailyNote,
+        OpenQuick,
         ExportTypst,
         ExportPdf,
         ExportHtml,
@@ -441,6 +443,8 @@ struct Workspace {
     preview: Preview,
     preview_task: Task<()>,
     new_doc: Option<NewDocForm>,
+    /// Schnellöffner (Cmd/Ctrl-P), solange er offen ist.
+    quick_open: Option<quick_open::QuickOpen>,
     /// Gewählte Editor- und Textschrift.
     fonts: fonts::Fonts,
     sidebar: SidebarMode,
@@ -523,6 +527,7 @@ impl Workspace {
             preview: Preview::default(),
             preview_task: Task::ready(()),
             new_doc: None,
+            quick_open: None,
             fonts: fonts::Fonts::load(&notes_ui::data_dir()),
             sidebar: SidebarMode::Files,
             notes,
@@ -2744,8 +2749,10 @@ impl Render for Workspace {
             .map(status_stats)
             .unwrap_or_default();
 
+        let quick_open = self.render_quick_open(cx);
         let root = v_flex()
             .id("workspace")
+            .relative()
             .track_focus(&self.focus_handle)
             .size_full()
             .bg(cx.theme().background)
@@ -2769,6 +2776,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_preview))
             .on_action(cx.listener(Self::new_note))
             .on_action(cx.listener(Self::open_daily_note))
+            .on_action(cx.listener(Self::open_quick))
             .on_action(cx.listener(Self::selection_to_note))
             .on_action(cx.listener(Self::reveal_vault))
             .on_action(cx.listener(Self::note_to_workspace))
@@ -2846,6 +2854,7 @@ impl Render for Workspace {
                 ),
             )
             .child(StatusBar::new().left(status).right(h_flex().child(stats)))
+            .children(quick_open)
     }
 }
 
@@ -3197,6 +3206,7 @@ fn main() -> std::process::ExitCode {
             KeyBinding::new("secondary-shift-v", TogglePreview, None),
             KeyBinding::new("secondary-shift-n", NewNote, None),
             KeyBinding::new("secondary-shift-j", OpenDailyNote, None),
+            KeyBinding::new("secondary-p", OpenQuick, None),
             KeyBinding::new("secondary-shift-f", ShowNotes, None),
             KeyBinding::new("secondary-shift-e", ExportPdf, None),
             KeyBinding::new("secondary-shift-t", ExportTypst, None),
