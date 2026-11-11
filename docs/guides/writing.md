@@ -4,11 +4,11 @@ description: Formatting bar, insert list, syntax explanations and templates for 
 order: 1
 ---
 
-Markdown, Typst and note files appear in a serif typeface in a centered text column; code stays in monospace. Above the text you see the save state, the word count and the reading time, and for notes their `#tags`.
+Markdown, Typst and note files appear in a serif typeface in a centered text column; code stays in monospace. The status bar shows the save state, the word count and the reading time; notes show their `#tags` above the text.
 
 ## Formatting
 
-- **The formatting bar** above files and the “Format“ and “Einfügen“ (Insert) menus set headings, emphasis, lists, links and code.
+- **The formatting bar** above documents and notes and the “Format“ and “Einfügen“ (Insert) menus set headings, emphasis, lists, links and code.
 - **`/` at the start of a line** opens an insert list – heading, list, table, code block and more, without typing the syntax.
 - **Explanations on hover:** move the mouse over syntax to see what it does.
 - **Cheat sheet** (`Cmd/Ctrl-Shift-/`) lists the most important markup.

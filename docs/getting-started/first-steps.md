@@ -26,7 +26,7 @@ The window has three columns:
 2. **List** in the middle: the notes of the selected view with title, time and a two-line preview – or the file tree of the workspace.
 3. **Text** on the right: the editor with tabs. `Cmd/Ctrl-\` splits it into two views.
 
-`Cmd/Ctrl-Shift-L` hides the middle column, `Cmd/Ctrl-Shift-Enter` switches to focus mode, which shows only the text.
+The bar above the columns toggles the list, split view, focus mode, print preview and cheat sheet, and exports to Typst, HTML or PDF. `Cmd/Ctrl-Shift-L` hides the middle column, `Cmd/Ctrl-Shift-Enter` switches to focus mode, which shows only the text.
 
 ## Your first note
 

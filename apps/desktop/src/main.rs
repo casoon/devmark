@@ -120,7 +120,6 @@ icon_assets!(
         TableOfContents,
         CircleQuestionMark,
         FilePlus,
-        Printer,
         FileType,
         Trash,
         RotateCcwClock,
@@ -133,6 +132,11 @@ icon_assets!(
         ChevronsUpDown,
         FileSymlink,
         SquarePen,
+        PanelLeft,
+        Columns2,
+        Maximize2,
+        CodeXml,
+        Plus,
     ]
 );
 
@@ -1704,14 +1708,13 @@ impl Workspace {
                 continue;
             }
             if last_group.is_some_and(|group| group != action.group()) {
-                bar = bar.child(div().w(px(1.)).h(px(16.)).mx_1().bg(cx.theme().border));
+                bar = bar.child(div().w(px(1.)).h(px(20.)).mx_1().bg(cx.theme().border));
             }
             last_group = Some(action.group());
             let tooltip = format!("{} – {}", action.label(), action.description());
             bar = bar.child(
                 Button::new(("format", ix))
                     .ghost()
-                    .xsmall()
                     .icon(icon)
                     .tooltip_with_action(tooltip, ui_action.as_ref(), None)
                     .on_click(
@@ -1719,12 +1722,110 @@ impl Workspace {
                     ),
             );
         }
+        bar
+    }
+
+    /// Leiste über den Spalten: Ansichten ein-/ausblenden und Exporte – beschriftet und
+    /// immer sichtbar, nichts nur über Menü oder Tastenkürzel.
+    fn render_topbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let buffer = self.active_buffer().filter(|_| self.new_doc.is_none());
+        let syntax = buffer.and_then(|b| b.syntax);
+        let is_note = buffer.is_some_and(|b| b.note_id.is_some());
+        let history_open = self.notes.as_ref().is_some_and(|n| n.history.is_some());
+        let mut bar = h_flex()
+            .flex_none()
+            .w_full()
+            .flex_wrap()
+            .gap_1()
+            .px_3()
+            .py_1p5()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().sidebar)
+            .child(
+                Button::new("toggle-list")
+                    .ghost()
+                    .icon(AssetIcon::PanelLeft)
+                    .label("Liste")
+                    .selected(self.show_list && !self.focus_mode)
+                    .tooltip_with_action("Listenspalte ein-/ausblenden", &ToggleList, None)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.show_list = !this.show_list;
+                        this.focus_mode = false;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("toggle-split")
+                    .ghost()
+                    .icon(AssetIcon::Columns2)
+                    .label("Split")
+                    .selected(self.split)
+                    .tooltip_with_action("Zwei Texte nebeneinander", &ToggleSplit, None)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_split(&ToggleSplit, window, cx)
+                    })),
+            )
+            .child(
+                Button::new("toggle-focus")
+                    .ghost()
+                    .icon(AssetIcon::Maximize2)
+                    .label("Fokus")
+                    .selected(self.focus_mode)
+                    .tooltip_with_action("Nur den Text zeigen", &ToggleFocus, None)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.focus_mode = !this.focus_mode;
+                        cx.notify();
+                    })),
+            );
+        if syntax.is_some() {
+            bar = bar
+                .child(div().w(px(1.)).h(px(20.)).mx_1().bg(cx.theme().border))
+                .child(
+                    Button::new("preview")
+                        .ghost()
+                        .icon(AssetIcon::Eye)
+                        .label("Vorschau")
+                        .selected(self.show_preview)
+                        .tooltip_with_action(
+                            "Druckvorschau neben dem Text ein-/ausblenden",
+                            &TogglePreview,
+                            None,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_preview(&TogglePreview, window, cx)
+                        })),
+                )
+                .child(
+                    Button::new("help")
+                        .ghost()
+                        .icon(AssetIcon::CircleQuestionMark)
+                        .label("Spickzettel")
+                        .selected(self.show_help)
+                        .tooltip_with_action("Spickzettel ein-/ausblenden", &ToggleHelp, None)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_help(&ToggleHelp, window, cx)
+                        })),
+                );
+        }
+        if is_note {
+            bar = bar.child(
+                Button::new("history")
+                    .ghost()
+                    .icon(AssetIcon::RotateCcwClock)
+                    .label("Verlauf")
+                    .selected(history_open)
+                    .tooltip_with_action("Frühere Stände dieser Notiz", &ShowHistory, None)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.show_history(&ShowHistory, window, cx)
+                    })),
+            );
+        }
         bar = bar.child(div().flex_1());
-        if syntax == Syntax::Markdown {
+        if syntax == Some(Syntax::Markdown) {
             bar = bar.child(
                 Button::new("export-typst")
-                    .ghost()
-                    .xsmall()
+                    .outline()
                     .icon(AssetIcon::FileType)
                     .label("Typst")
                     .tooltip_with_action(
@@ -1737,74 +1838,38 @@ impl Workspace {
                     })),
             );
         }
-        if self.active_buffer().is_some_and(|b| b.note_id.is_some()) {
-            let open = self.notes.as_ref().is_some_and(|n| n.history.is_some());
-            bar = bar.child(
-                Button::new("history")
-                    .ghost()
-                    .xsmall()
-                    .icon(AssetIcon::RotateCcwClock)
-                    .label("Verlauf")
-                    .selected(open)
-                    .tooltip_with_action("Frühere Stände dieser Notiz", &ShowHistory, None)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.show_history(&ShowHistory, window, cx)
-                    })),
-            );
-        }
-        bar.child(
-            Button::new("preview")
-                .ghost()
-                .xsmall()
-                .icon(AssetIcon::Eye)
-                .label("Vorschau")
-                .selected(self.show_preview)
-                .tooltip_with_action(
-                    "Druckvorschau neben dem Text ein-/ausblenden",
-                    &TogglePreview,
-                    None,
+        if syntax.is_some() {
+            bar = bar
+                .child(
+                    Button::new("export-html")
+                        .outline()
+                        .icon(AssetIcon::CodeXml)
+                        .label("HTML")
+                        .tooltip_with_action(
+                            "Als statische HTML-Seite exportieren",
+                            &ExportHtml,
+                            None,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.export_html(&ExportHtml, window, cx)
+                        })),
                 )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.toggle_preview(&TogglePreview, window, cx)
-                })),
-        )
-        .child(
-            Button::new("export-pdf")
-                .ghost()
-                .xsmall()
-                .icon(AssetIcon::Printer)
-                .label("PDF")
-                .tooltip_with_action("Als PDF exportieren und öffnen", &ExportPdf, None)
-                .on_click(
-                    cx.listener(|this, _, window, cx| this.export_pdf(&ExportPdf, window, cx)),
-                ),
-        )
-        .child(
-            Button::new("help")
-                .ghost()
-                .xsmall()
-                .icon(AssetIcon::CircleQuestionMark)
-                .selected(self.show_help)
-                .tooltip_with_action("Spickzettel ein-/ausblenden", &ToggleHelp, None)
-                .on_click(
-                    cx.listener(|this, _, window, cx| this.toggle_help(&ToggleHelp, window, cx)),
-                ),
-        )
+                .child(
+                    Button::new("export-pdf")
+                        .primary()
+                        .icon(AssetIcon::FileDown)
+                        .label("PDF")
+                        .tooltip_with_action("Als PDF exportieren und öffnen", &ExportPdf, None)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.export_pdf(&ExportPdf, window, cx)
+                        })),
+                );
+        }
+        bar
     }
 
-    /// Kopfzeile über dem Text: Tags der Notiz, Speicherstand, Wortzahl.
+    /// Kopfzeile über dem Text: Tags der Notiz. Speicherstand und Wortzahl stehen in der Statusleiste.
     fn render_doc_header(&self, buffer: &Buffer, cx: &mut Context<Self>) -> impl IntoElement {
-        let saved = match (buffer.dirty, buffer.note_id.is_some(), buffer.saved_at) {
-            (true, true, _) => "Speichert …".to_string(),
-            (true, false, _) => "Nicht gespeichert".to_string(),
-            (false, _, Some(at)) => format!("Gespeichert {}", notes_ui::relative_time(at)),
-            (false, _, None) => String::new(),
-        };
-        let words = match buffer.stats.words {
-            0 => "0 Wörter".to_string(),
-            1 => "1 Wort · 1 min".to_string(),
-            n => format!("{} Wörter · {} min", group_digits(n), reading_minutes(n)),
-        };
         let filter = self.notes.as_ref().and_then(|n| n.tag_filter.clone());
         let mut tags = h_flex().flex_1().min_w_0().flex_wrap().gap_1();
         for (ix, tag) in buffer.stats.tags.iter().enumerate() {
@@ -1834,11 +1899,6 @@ impl Workspace {
             .text_xs()
             .text_color(cx.theme().muted_foreground)
             .child(tags)
-            .child(div().flex_none().child(if saved.is_empty() {
-                words
-            } else {
-                format!("{saved} · {words}")
-            }))
     }
 
     /// Gliederung am rechten Rand: ein Strich je Überschrift, Klick springt hin.
@@ -2320,10 +2380,7 @@ impl Workspace {
                     // Schreib-Layout: Proportionalschrift in einer zentrierten Textspalte.
                     Some(syntax) => v_flex()
                         .size_full()
-                        // Notizen ohne Formatleiste: `/`, Tastenkürzel und Menüs reichen.
-                        .when(buffer.note_id.is_none(), |this| {
-                            this.child(self.render_toolbar(syntax, cx))
-                        })
+                        .child(self.render_toolbar(syntax, cx))
                         .child(
                             h_flex()
                                 .flex_1()
@@ -2471,6 +2528,11 @@ impl Render for Workspace {
                 }
             })
             .unwrap_or_default();
+        let stats = self
+            .active_buffer()
+            .filter(|b| b.syntax.is_some() && self.new_doc.is_none())
+            .map(status_stats)
+            .unwrap_or_default();
 
         let root = v_flex()
             .id("workspace")
@@ -2547,37 +2609,34 @@ impl Render for Workspace {
                     columns.child(resizable_panel().size(px(300.)).child(self.render_list(cx)));
             }
         }
-        root.child(
-            div()
-                .flex_1()
-                .min_h_0()
-                .child(columns.child(resizable_panel().child(main))),
-        )
-        .child(
-            StatusBar::new().left(status).right(
-                h_flex()
-                    .gap_1()
-                    .child(
-                        Button::new("new-doc")
-                            .ghost()
-                            .xsmall()
-                            .label("Neu …")
-                            .tooltip_with_action("Neues Dokument aus Vorlage", &NewDocument, None)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.new_document(&NewDocument, window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new("split")
-                            .ghost()
-                            .xsmall()
-                            .label(if self.split { "Split aus" } else { "Split" })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_split(&ToggleSplit, window, cx)
-                            })),
-                    ),
-            ),
-        )
+        root.child(self.render_topbar(cx))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(columns.child(resizable_panel().child(main))),
+            )
+            .child(StatusBar::new().left(status).right(h_flex().child(stats)))
+    }
+}
+
+/// Speicherstand, Wortzahl und Lesezeit für die Statusleiste.
+fn status_stats(buffer: &Buffer) -> String {
+    let saved = match (buffer.dirty, buffer.note_id.is_some(), buffer.saved_at) {
+        (true, true, _) => "Speichert …".to_string(),
+        (true, false, _) => "Nicht gespeichert".to_string(),
+        (false, _, Some(at)) => format!("Gespeichert {}", notes_ui::relative_time(at)),
+        (false, _, None) => String::new(),
+    };
+    let words = match buffer.stats.words {
+        0 => "0 Wörter".to_string(),
+        1 => "1 Wort · 1 min".to_string(),
+        n => format!("{} Wörter · {} min", group_digits(n), reading_minutes(n)),
+    };
+    if saved.is_empty() {
+        words
+    } else {
+        format!("{saved} · {words}")
     }
 }
 
@@ -2770,6 +2829,15 @@ fn warm_theme(cx: &mut App) {
         theme.border = rgb(0xe7e5e4).into();
         theme.sidebar_border = rgb(0xe7e5e4).into();
         theme.muted_foreground = rgb(0x78716c).into();
+        // Eine Akzentfarbe für Hauptaktionen (PDF, Anlegen).
+        theme.primary = rgb(0x0f766e).into();
+        theme.primary_hover = rgb(0x115e59).into();
+        theme.primary_active = rgb(0x134e4a).into();
+        theme.primary_foreground = rgb(0xffffff).into();
+        theme.button_primary = theme.primary;
+        theme.button_primary_hover = theme.primary_hover;
+        theme.button_primary_active = theme.primary_active;
+        theme.button_primary_foreground = theme.primary_foreground;
     });
 }
 

@@ -5,6 +5,12 @@ All notable changes to DevMark are listed here. DevMark follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Interface:** a labelled bar above the columns toggles list, split, focus, print preview, cheat sheet and note history, and holds the Typst, HTML and PDF exports; the status bar keeps only save state, word count and reading time.
+- **Interface:** “Document” and “Note” buttons at the top of the navigation create new entries; search moved to the top; larger icons and buttons throughout, with a teal accent for the main actions.
+- **Notes:** the formatting bar now also shows for notes.
+
 ## [0.2.0] - 2026-11-11
 
 ### Added

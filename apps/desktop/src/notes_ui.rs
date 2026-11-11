@@ -1094,6 +1094,14 @@ impl Workspace {
         if let Some(state) = state {
             body = body
                 .child(
+                    nav_row("nav-search", 0, false, cx)
+                        .child(nav_icon(AssetIcon::Search, cx))
+                        .child("Suchen")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.show_notes(&ShowNotes, window, cx)
+                        })),
+                )
+                .child(
                     nav_row("nav-notes", 0, plain, cx)
                         .child(nav_icon(AssetIcon::NotebookPen, cx))
                         .child("Notizen")
@@ -1162,28 +1170,48 @@ impl Workspace {
             .border_t_1()
             .border_color(cx.theme().border);
         if self.notes.is_some() {
-            footer = footer
-                .child(
-                    nav_row("nav-search", 0, false, cx)
-                        .child(nav_icon(AssetIcon::Search, cx))
-                        .child("Suchen")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.show_notes(&ShowNotes, window, cx)
-                        })),
-                )
-                .child(
-                    nav_row("nav-trash", 0, notes_view && trash, cx)
-                        .child(nav_icon(AssetIcon::Trash, cx))
-                        .child("Papierkorb")
-                        .on_click(
-                            cx.listener(|this, _, _, cx| this.show_note_view(true, false, cx)),
-                        ),
-                );
+            footer = footer.child(
+                nav_row("nav-trash", 0, notes_view && trash, cx)
+                    .child(nav_icon(AssetIcon::Trash, cx))
+                    .child("Papierkorb")
+                    .on_click(cx.listener(|this, _, _, cx| this.show_note_view(true, false, cx))),
+            );
         }
         v_flex()
             .size_full()
             .bg(cx.theme().sidebar)
             .child(div().p_2().child(self.render_workspace_switcher(cx)))
+            .child(
+                // Neu anlegen: oben, beschriftet, statt rechts unten in der Statusleiste.
+                h_flex()
+                    .px_2()
+                    .pb_2()
+                    .gap_1()
+                    .child(
+                        Button::new("nav-new-document")
+                            .outline()
+                            .flex_1()
+                            .icon(AssetIcon::Plus)
+                            .label("Dokument")
+                            .tooltip_with_action("Neues Dokument aus Vorlage", &NewDocument, None)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.new_document(&NewDocument, window, cx)
+                            })),
+                    )
+                    .when(self.notes.is_some(), |this| {
+                        this.child(
+                            Button::new("nav-new-note")
+                                .outline()
+                                .flex_1()
+                                .icon(AssetIcon::Plus)
+                                .label("Notiz")
+                                .tooltip_with_action("Neue Notiz", &NewNote, None)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.new_note(&NewNote, window, cx)
+                                })),
+                        )
+                    }),
+            )
             .child(body)
             .child(footer)
     }
@@ -1206,7 +1234,6 @@ impl Workspace {
         let action = match self.sidebar {
             SidebarMode::Notes if self.notes.as_ref().is_some_and(|s| !s.show_trash) => Some(
                 Button::new("new-note")
-                    .small()
                     .ghost()
                     .icon(AssetIcon::SquarePen)
                     .tooltip_with_action("Neue Notiz", &NewNote, None)
@@ -1216,7 +1243,6 @@ impl Workspace {
             ),
             SidebarMode::Files if self.root.is_some() => Some(
                 Button::new("new-file")
-                    .small()
                     .ghost()
                     .icon(AssetIcon::FilePlus)
                     .tooltip_with_action("Neues Dokument aus Vorlage", &NewDocument, None)
@@ -1323,9 +1349,9 @@ impl Workspace {
             } else if state.favorites_only {
                 "Noch keine Favoriten. Der Stern an einer Notiz markiert sie."
             } else if state.folder_filter.is_some() {
-                "Dieser Ordner ist leer. Der Stift neben der Suche legt hier eine Notiz an."
+                "Dieser Ordner ist leer. „Notiz“ oben links legt hier eine an."
             } else {
-                "Noch keine Notizen. Der Stift neben der Suche oder Cmd-Shift-N legt eine an."
+                "Noch keine Notizen. „Notiz“ oben links oder Cmd-Shift-N legt eine an."
             };
             list = list.child(
                 div()
@@ -1344,7 +1370,7 @@ impl Workspace {
                     .child(
                         Button::new(("restore", ix))
                             .ghost()
-                            .xsmall()
+                            .small()
                             .label("Wiederherstellen")
                             .on_click(cx.listener({
                                 let id = id.clone();
@@ -1354,7 +1380,7 @@ impl Workspace {
                     .child(
                         Button::new(("purge", ix))
                             .ghost()
-                            .xsmall()
+                            .small()
                             .label("Löschen")
                             .tooltip("Endgültig löschen")
                             .on_click(cx.listener({
@@ -1372,7 +1398,7 @@ impl Workspace {
                         this.child(
                             Button::new(("move", ix))
                                 .ghost()
-                                .xsmall()
+                                .small()
                                 .icon(AssetIcon::FolderInput)
                                 .tooltip("In Ordner verschieben")
                                 .dropdown_menu(move |mut menu, _, _| {
@@ -1402,7 +1428,7 @@ impl Workspace {
                     .child(
                         Button::new(("favorite", ix))
                             .ghost()
-                            .xsmall()
+                            .small()
                             .icon(if row.favorite {
                                 AssetIcon::StarFill
                             } else {
@@ -1421,7 +1447,7 @@ impl Workspace {
                     .child(
                         Button::new(("trash", ix))
                             .ghost()
-                            .xsmall()
+                            .small()
                             .icon(AssetIcon::Trash)
                             .tooltip("In den Papierkorb")
                             .on_click(cx.listener({
@@ -1523,7 +1549,7 @@ impl Workspace {
     ) -> impl IntoElement {
         let new_folder = Button::new("new-folder")
             .ghost()
-            .xsmall()
+            .small()
             .icon(AssetIcon::FolderPlus)
             .tooltip(if state.folder_filter.is_some() {
                 "Neuer Unterordner im ausgewählten Ordner"
@@ -1568,7 +1594,7 @@ impl Workspace {
                         this.child(
                             Button::new(("rename-folder", ix))
                                 .ghost()
-                                .xsmall()
+                                .small()
                                 .icon(AssetIcon::Pencil)
                                 .tooltip("Umbenennen")
                                 .on_click(cx.listener({
@@ -1581,7 +1607,7 @@ impl Workspace {
                         .child(
                             Button::new(("delete-folder", ix))
                                 .ghost()
-                                .xsmall()
+                                .small()
                                 .icon(AssetIcon::Trash)
                                 .tooltip("Ordner auflösen (Notizen bleiben erhalten)")
                                 .on_click(cx.listener({
@@ -1665,7 +1691,7 @@ fn nav_row(id: impl Into<ElementId>, depth: usize, selected: bool, cx: &App) -> 
         .gap_2()
         .pl(px(8. + 14. * depth as f32))
         .pr_1()
-        .min_h(px(30.))
+        .min_h(px(34.))
         .rounded(cx.theme().radius)
         .cursor_pointer()
         .text_sm()
@@ -1677,9 +1703,7 @@ fn nav_row(id: impl Into<ElementId>, depth: usize, selected: bool, cx: &App) -> 
 }
 
 fn nav_icon(icon: AssetIcon, cx: &App) -> Icon {
-    Icon::new(icon)
-        .small()
-        .text_color(cx.theme().muted_foreground)
+    Icon::new(icon).text_color(cx.theme().muted_foreground)
 }
 
 /// Abschnittsüberschrift der Navigation, optional mit Knopf rechts.
