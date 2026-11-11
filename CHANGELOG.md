@@ -11,7 +11,6 @@ All notable changes to DevMark are listed here. DevMark follows
 
 ### Changed
 
-- **Pages:** the project site uses the current shared theme (0.12.11).
 - **Pages:** the home page shows the path of a document from Markdown to preview, PDF and web pages, and names the prebuilt downloads; the site uses the shared theme 0.12.11.
 
 ## [0.3.0] - 2026-11-11
