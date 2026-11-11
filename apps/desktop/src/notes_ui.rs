@@ -51,6 +51,8 @@ pub struct NoteRow {
     pub time: String,
     pub favorite: bool,
     pub folder_id: Option<String>,
+    /// Tags der Notiz, unter dem Auszug.
+    pub tags: Vec<String>,
 }
 
 pub struct NotesState {
@@ -347,6 +349,7 @@ impl Workspace {
                             .ok()
                             .flatten()
                             .and_then(|d| d.folder_id),
+                        tags: state.notes.tags_of(&hit.id).unwrap_or_default(),
                         id: hit.id,
                         title: hit.title,
                         preview: hit.snippet.replace(['\n', '\r'], " "),
@@ -381,6 +384,7 @@ impl Workspace {
                         time: relative_time(d.updated_at),
                         favorite: d.favorite,
                         folder_id: d.folder_id.clone(),
+                        tags: state.notes.tags_of(&d.id).unwrap_or_default(),
                     })
                     .collect()
             })
@@ -1456,39 +1460,48 @@ impl Workspace {
                             })),
                     )
             };
-            // Aktionen nur bei Mauszeiger oder Auswahl, im Papierkorb immer.
-            let group = SharedString::from(format!("note-row-{ix}"));
-            let actions = div()
-                .absolute()
-                .top_1()
-                .right_1()
-                .rounded(cx.theme().radius)
-                .bg(cx.theme().accent)
-                .when(!selected && !state.show_trash, |this| {
-                    this.invisible()
-                        .group_hover(group.clone(), |this| this.visible())
-                })
-                .child(actions);
+            // Aktionen in der ausgewählten Zeile unten rechts, im Papierkorb immer.
+            let show_actions = selected || state.show_trash;
+            let mut tags = h_flex().flex_1().min_w_0().gap_1().overflow_hidden();
+            for tag in row.tags.iter().take(3) {
+                tags = tags.child(
+                    div()
+                        .flex_none()
+                        .px_1p5()
+                        .rounded(cx.theme().radius)
+                        .bg(cx.theme().secondary)
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("#{tag}")),
+                );
+            }
+            let footer = (show_actions || !row.tags.is_empty()).then(|| {
+                h_flex()
+                    .gap_2()
+                    .min_h(px(24.))
+                    .child(tags)
+                    .when(show_actions, |this| this.child(actions))
+            });
             list = list.child(
                 v_flex()
                     .id(("note", ix))
-                    .group(group)
-                    .relative()
                     .role(Role::ListItem)
                     .aria_label(row.title.clone())
                     .aria_selected(selected)
                     .w_full()
-                    .gap_0p5()
+                    .gap_1()
                     .px_3()
                     .py_2()
                     .rounded(cx.theme().radius)
                     .cursor_pointer()
                     .bg(if selected {
-                        cx.theme().accent
+                        cx.theme().primary.opacity(0.1)
                     } else {
                         cx.theme().transparent
                     })
-                    .hover(|this| this.bg(cx.theme().accent))
+                    .when(!selected, |this| {
+                        this.hover(|this| this.bg(cx.theme().accent))
+                    })
                     .child(
                         h_flex()
                             .gap_2()
@@ -1520,7 +1533,7 @@ impl Workspace {
                                 .child(row.preview.clone()),
                         )
                     })
-                    .child(actions)
+                    .children(footer)
                     .when(!state.show_trash, |this| {
                         this.on_click(cx.listener(move |this, _, window, cx| {
                             this.open_note(id.clone(), window, cx)

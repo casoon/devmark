@@ -1496,6 +1496,7 @@ dependencies = [
  "futures",
  "gpui-kit",
  "lsp-types",
+ "serde_json",
  "tree-sitter",
 ]
 
