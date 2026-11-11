@@ -16,6 +16,7 @@ All notable changes to DevMark are listed here. DevMark follows
 
 ### Changed
 
+- **Interface:** Typst files and code are set in JetBrains Mono (built in) across the full width of the editor instead of in the serif reading column; “Schrift“ in the navigation chooses the typeface for code and Typst and the one for Markdown. See [Writing](https://casoon.github.io/devmark/docs/guides/writing/).
 - **Interface:** navigation, list, text and preview keep minimum widths, so a narrow window shrinks the preview and side columns first instead of squeezing the text.
 - **Pages:** the home page shows the path of a document from Markdown to preview, PDF and web pages, and names the prebuilt downloads; the site uses the shared theme 0.12.12.
 

@@ -2,6 +2,7 @@
 //! Schreibhilfen für Markdown/Typst und Export nach Typst/PDF.
 
 mod assist;
+mod fonts;
 mod notes_ui;
 
 use std::cell::RefCell;
@@ -329,17 +330,6 @@ fn group_digits(n: usize) -> String {
 const WRITING_COLUMN: f32 = 720.;
 const WRITING_FONT_SIZE: f32 = 17.;
 
-/// Lesefreundliche Schrift für Fließtext; Systemschrift, wo keine Serifenschrift sicher da ist.
-fn writing_font(cx: &App) -> SharedString {
-    if cfg!(target_os = "macos") {
-        "Charter".into()
-    } else if cfg!(target_os = "windows") {
-        "Georgia".into()
-    } else {
-        cx.theme().font_family.clone()
-    }
-}
-
 impl Buffer {
     fn label(&self) -> String {
         self.title.clone().unwrap_or_else(|| file_name(&self.path))
@@ -451,6 +441,8 @@ struct Workspace {
     preview: Preview,
     preview_task: Task<()>,
     new_doc: Option<NewDocForm>,
+    /// Gewählte Editor- und Textschrift.
+    fonts: fonts::Fonts,
     sidebar: SidebarMode,
     notes: Option<NotesState>,
     window_handle: AnyWindowHandle,
@@ -531,6 +523,7 @@ impl Workspace {
             preview: Preview::default(),
             preview_task: Task::ready(()),
             new_doc: None,
+            fonts: fonts::Fonts::load(&notes_ui::data_dir()),
             sidebar: SidebarMode::Files,
             notes,
             window_handle: window.window_handle(),
@@ -1659,6 +1652,62 @@ impl Workspace {
             })
     }
 
+    /// Schrift für Code/Typst (`code`) oder Markdown wählen und merken.
+    fn set_font(&mut self, code: bool, name: String, cx: &mut Context<Self>) {
+        if code {
+            self.fonts.code = name;
+        } else {
+            self.fonts.text = name;
+        }
+        self.fonts.save(&notes_ui::data_dir());
+        cx.notify();
+    }
+
+    /// Menü „Schrift“ am Fuß der Navigation.
+    pub(crate) fn render_font_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (current, workspace) = (self.fonts.clone(), cx.entity().downgrade());
+        let (code, text) = (fonts::code_choices(cx), fonts::text_choices(cx));
+        Button::new("font-menu")
+            .ghost()
+            .small()
+            .w_full()
+            .justify_start()
+            .icon(AssetIcon::Pencil)
+            .label("Schrift")
+            .tooltip("Schrift für Code und Typst sowie für Markdown wählen")
+            .dropdown_menu(move |mut menu, _, _| {
+                menu = menu.item(PopupMenuItem::label("Code und Typst"));
+                for name in &code {
+                    let (workspace, choice) = (workspace.clone(), name.clone());
+                    menu = menu.item(
+                        PopupMenuItem::new(name.clone())
+                            .checked(&current.code == name)
+                            .on_click(move |_, _, cx| {
+                                workspace
+                                    .update(cx, |this, cx| this.set_font(true, choice.clone(), cx))
+                                    .ok();
+                            }),
+                    );
+                }
+                menu = menu
+                    .item(PopupMenuItem::separator())
+                    .item(PopupMenuItem::label("Markdown"));
+                for name in &text {
+                    let (workspace, choice) = (workspace.clone(), name.clone());
+                    menu = menu.item(
+                        PopupMenuItem::new(name.clone())
+                            .checked(&current.text == name)
+                            .on_click(move |_, _, cx| {
+                                workspace
+                                    .update(cx, |this, cx| this.set_font(false, choice.clone(), cx))
+                                    .ok();
+                            }),
+                    );
+                }
+                menu
+            })
+    }
+
     fn render_file_tree(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         tree(
@@ -2490,8 +2539,35 @@ impl Workspace {
             (Some(form), _) => self.render_new_document(form, cx).into_any_element(),
             (None, Some(buffer)) => {
                 let editor = Editor::new(&buffer.editor).bordered(false).p_0().h_full();
+                let code_font = SharedString::from(self.fonts.code.clone());
                 match buffer.syntax {
-                    // Schreib-Layout: Proportionalschrift in einer zentrierten Textspalte.
+                    // Typst ist Code: Festbreitenschrift über die ganze Breite wie in jedem Editor.
+                    Some(Syntax::Typst) => v_flex()
+                        .size_full()
+                        .child(self.render_toolbar(Syntax::Typst, cx))
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_h_0()
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .h_full()
+                                        .px_2()
+                                        .child(self.render_doc_header(buffer, cx))
+                                        .child(
+                                            div().flex_1().min_h_0().child(
+                                                editor
+                                                    .font_family(code_font)
+                                                    .text_size(cx.theme().mono_font_size),
+                                            ),
+                                        ),
+                                )
+                                .children(self.render_outline(buffer, cx)),
+                        )
+                        .into_any_element(),
+                    // Markdown: Proportionalschrift in einer zentrierten Textspalte.
                     Some(syntax) => v_flex()
                         .size_full()
                         .child(self.render_toolbar(syntax, cx))
@@ -2511,7 +2587,9 @@ impl Workspace {
                                             .child(
                                                 div().flex_1().min_h_0().child(
                                                     editor
-                                                        .font_family(writing_font(cx))
+                                                        .font_family(SharedString::from(
+                                                            self.fonts.text.clone(),
+                                                        ))
                                                         .text_size(px(WRITING_FONT_SIZE)),
                                                 ),
                                             )
@@ -2526,7 +2604,7 @@ impl Workspace {
                         )
                         .into_any_element(),
                     None => editor
-                        .font_family(cx.theme().mono_font_family.clone())
+                        .font_family(code_font)
                         .text_size(cx.theme().mono_font_size)
                         .into_any_element(),
                 }
@@ -3103,6 +3181,7 @@ fn main() -> std::process::ExitCode {
     });
     app.run(move |cx| {
         gpui_kit::init(cx);
+        fonts::register(cx);
         warm_theme(cx);
         register_typst_language();
         cx.bind_keys([

@@ -8,6 +8,7 @@ order: 1
 |---|---|
 | Cmd/Ctrl-N | New document from template |
 | Cmd/Ctrl-Shift-N | New note |
+| Cmd/Ctrl-Shift-J | Today's note |
 | Cmd/Ctrl-Shift-F | Search notes |
 | Cmd/Ctrl-O | Open |
 | Cmd/Ctrl-S | Save |

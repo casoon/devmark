@@ -21,3 +21,11 @@ for p in sorted(json.load(sys.stdin)["packages"], key=lambda p: p["name"]):
             print(p["name"], p["version"] + ":", f + "\n")
             print(open(os.path.join(d, f), encoding="utf-8").read())
 ' >> "$out"
+
+# JetBrains Mono, built into the app (SIL Open Font License 1.1).
+{
+    echo "--------------------------------------------------------------------------------"
+    echo "JetBrains Mono 2.304 (font, built into DevMark):"
+    echo
+    cat apps/desktop/assets/fonts/OFL-JetBrainsMono.txt
+} >> "$out"

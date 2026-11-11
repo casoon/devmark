@@ -4,7 +4,7 @@ description: Formatting bar, insert list, syntax explanations and templates for 
 order: 1
 ---
 
-Markdown, Typst and note files appear in a serif typeface in a centered text column; code stays in monospace. The status bar shows the save state, the word count and the reading time; notes show their `#tags` above the text.
+Markdown and note files appear in a serif typeface in a centered text column. Typst files and code are set in a monospace typeface across the full width of the editor, like in any code editor. The default is JetBrains Mono, which is built in; “Schrift“ at the bottom of the navigation chooses another monospace typeface for code and Typst and the typeface for Markdown. The status bar shows the save state, the word count and the reading time; notes show their `#tags` above the text.
 
 ## Formatting
 

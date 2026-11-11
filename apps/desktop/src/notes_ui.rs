@@ -1345,7 +1345,7 @@ impl Workspace {
                     }),
             )
             .child(body)
-            .child(footer)
+            .child(footer.child(self.render_font_menu(cx)))
     }
 
     /// Mittlere Spalte: Notizliste oder Dateibaum mit Überschrift.
