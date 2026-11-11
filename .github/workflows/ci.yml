@@ -1,11 +1,25 @@
 name: CI
 
+# Rust checks for pull requests and master. The release workflow calls the same
+# job before it builds anything, so a release is never checked differently.
+# Changes that only touch the project site, docs or Markdown files skip it;
+# the Pages workflow builds those.
+
 on:
   pull_request:
+    paths-ignore: &docs-only
+      - "docs/**"
+      - "site/**"
+      - "**.md"
+      - ".github/workflows/pages.yml"
   push:
     branches: [master]
+    paths-ignore: *docs-only
+  workflow_call:
 
 concurrency:
+  # A newer push to the same PR or branch cancels the running check. Called from
+  # the release workflow, `github.workflow` is "Release", so the two never collide.
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
@@ -20,16 +34,19 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: Format
+        run: cargo fmt --all --check
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: rustfmt, clippy
+          components: clippy
+          # Only master writes the cache; pull requests restore it. Keeps the
+          # repository under GitHub's cache limit instead of evicting master's.
           cache-save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: System libraries for GPUI
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang libfontconfig-dev libwayland-dev \
-            libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev \
-            libasound2-dev libvulkan1
-      - run: cargo fmt --all --check
+          sudo apt-get install -y --no-install-recommends clang libfontconfig-dev \
+            libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev \
+            libzstd-dev libasound2-dev libvulkan1
       - run: cargo clippy --workspace --all-targets --locked -- --deny warnings
       - run: cargo test --workspace --locked

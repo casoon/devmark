@@ -2,17 +2,21 @@
 # Baut DevMark.app (Release) unter $CARGO_TARGET_DIR (sonst target)/release/bundle/ und installiert optional nach /Applications.
 #   scripts/bundle-macos.sh            # nur bauen
 #   scripts/bundle-macos.sh --install  # bauen und nach /Applications kopieren
+# Mit DEVMARK_BINARY=<pfad> wird statt des Release-Builds diese Binary verpackt (Release-Workflow: Universal-Binary).
 set -eu
 cd "$(dirname "$0")/.."
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' apps/desktop/Cargo.toml | head -1)
-cargo build --release -p devmark
 target=${CARGO_TARGET_DIR:-target}
+if [ -z "${DEVMARK_BINARY:-}" ]; then
+  cargo build --release -p devmark
+  DEVMARK_BINARY=$target/release/devmark
+fi
 
 app=$target/release/bundle/DevMark.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$target/release/devmark" "$app/Contents/MacOS/devmark"
+cp "$DEVMARK_BINARY" "$app/Contents/MacOS/devmark"
 strip -x "$app/Contents/MacOS/devmark" 2>/dev/null || true
 cp apps/desktop/assets/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 

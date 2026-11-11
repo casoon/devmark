@@ -1,0 +1,184 @@
+name: Release
+
+# A version tag (vX.Y.Z) checks the code with the CI job, builds DevMark for
+# macOS (one universal app for Apple silicon and Intel) and Linux (x86_64), and
+# creates the GitHub release. Official downloads come only from here, never from
+# a developer machine.
+#
+# Every download carries a signed build provenance attestation (Sigstore, via
+# actions/attest-build-provenance) that ties it to this workflow run and commit,
+# a .sha256 next to it and a combined SHA256SUMS. Each archive includes
+# THIRD-PARTY-LICENSES.txt (scripts/third-party-licenses.sh: cargo-about plus
+# the NOTICE files of crates that ship one, e.g. the font licences).
+#
+# workflow_dispatch runs the checks and the builds without releasing, as a dry
+# run before tagging.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check
+    uses: ./.github/workflows/ci.yml
+
+  version:
+    name: Tag matches version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' apps/desktop/Cargo.toml | head -1)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "crate=$version tag=${GITHUB_REF_NAME#v}"
+            test "$version" = "${GITHUB_REF_NAME#v}"
+          fi
+
+  macos:
+    name: macOS (universal)
+    needs: [check, version]
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: aarch64-apple-darwin,x86_64-apple-darwin
+          cache-save-if: false
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.3
+      - name: Build both architectures
+        run: |
+          cargo build --release --locked -p devmark --target aarch64-apple-darwin
+          cargo build --release --locked -p devmark --target x86_64-apple-darwin
+          lipo -create -output target/devmark-universal \
+            target/aarch64-apple-darwin/release/devmark \
+            target/x86_64-apple-darwin/release/devmark
+      - name: Bundle and archive
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          scripts/third-party-licenses.sh THIRD-PARTY-LICENSES.txt
+          DEVMARK_BINARY=target/devmark-universal scripts/bundle-macos.sh
+          app=target/release/bundle/DevMark.app
+          cp LICENSE-APACHE LICENSE-MIT THIRD-PARTY-LICENSES.txt "$app/Contents/Resources/"
+          # The added files change the bundle, so sign it (ad hoc) again.
+          codesign --force --deep --sign - "$app"
+          name="DevMark-${VERSION}-macos-universal.zip"
+          mkdir -p dist
+          ditto -c -k --keepParent "$app" "dist/$name"
+          cd dist && shasum -a 256 "$name" > "$name.sha256"
+      - name: Attest build provenance
+        if: github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/*.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*
+          if-no-files-found: error
+
+  linux:
+    name: Linux (x86_64)
+    needs: [check, version]
+    # The oldest supported runner, so the binary runs on older glibc versions too.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-save-if: false
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.3
+      - name: System libraries for GPUI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang libfontconfig-dev \
+            libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev \
+            libzstd-dev libasound2-dev libvulkan1
+      - run: cargo build --release --locked -p devmark
+      - name: Archive
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          name="devmark-${VERSION}-linux-x86_64"
+          mkdir -p "dist/$name"
+          scripts/third-party-licenses.sh "dist/$name/THIRD-PARTY-LICENSES.txt"
+          cp target/release/devmark "dist/$name/"
+          strip "dist/$name/devmark"
+          cp README.md LICENSE-APACHE LICENSE-MIT "dist/$name/"
+          tar -czf "dist/$name.tar.gz" -C dist "$name"
+          rm -rf "dist/$name"
+          cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+      - name: Attest build provenance
+        if: github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/*.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    if: github.ref_type == 'tag'
+    needs: [version, macos, linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          test -s notes.md
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          cat ./*.sha256 > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --title "DevMark ${GITHUB_REF_NAME#v}" \
+            --notes-file ../notes.md --verify-tag ./*

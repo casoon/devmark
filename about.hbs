@@ -1,0 +1,21 @@
+Third-party software in DevMark
+===============================
+
+DevMark is licensed under Apache-2.0 OR MIT. It contains the following
+third-party software, each under its own licence. The fonts used for
+typesetting (Libertinus Serif, New Computer Modern, DejaVu Sans Mono and the
+PDF standard fonts) come with the typst-assets crate; their licences are listed
+in the NOTICE files at the end.
+
+{{#each licenses}}
+--------------------------------------------------------------------------------
+{{{name}}} ({{{id}}})
+
+Used by:
+{{#each used_by}}
+  - {{{crate.name}}} {{{crate.version}}}{{#if crate.repository}} ({{{crate.repository}}}){{/if}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}

@@ -16,6 +16,19 @@ A desktop editor for code, notes and long-form writing, built with Rust and [GPU
 
 The interface is in German for now.
 
+## Download
+
+Prebuilt versions for macOS (Apple silicon and Intel) and Linux (x86_64) are attached to the [GitHub releases](https://github.com/casoon/devmark/releases). The macOS app is not notarized by Apple; on first start, open it with right-click → Open.
+
+Official binaries come only from the GitHub releases of `casoon/devmark` — built there by the release workflow, never on a developer machine. To verify a download by hand, check the hash and the signed build provenance:
+
+```bash
+shasum -a 256 -c DevMark-<version>-macos-universal.zip.sha256
+gh attestation verify DevMark-<version>-macos-universal.zip --repo casoon/devmark
+```
+
+Each download contains the licences of the third-party software it includes (`THIRD-PARTY-LICENSES.txt`).
+
 ## Build and run
 
 ```sh
