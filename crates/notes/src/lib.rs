@@ -199,6 +199,9 @@ pub fn task_lines(markdown: &str) -> Vec<(usize, bool, String)> {
     tasks
 }
 
+/// Ordner der Tagesnotizen.
+pub const JOURNAL: &str = "Journal";
+
 /// Name der Sammelnotiz für schnell erfasste Gedanken.
 pub const INBOX: &str = "Inbox.md";
 
@@ -1040,6 +1043,18 @@ impl Notes {
             .collect())
     }
 
+    // ---- Tagesnotiz ----
+
+    /// Notiz `Journal/<Datum>.md` (`date` als `JJJJ-MM-TT`); wird mit dem Datum als Überschrift
+    /// angelegt, falls es sie noch nicht gibt.
+    pub fn daily_note(&mut self, date: &str) -> Result<Document> {
+        let id = join(Some(JOURNAL), &format!("{date}.md"));
+        if let Some(note) = self.get(&id)?.filter(|d| d.deleted_at.is_none()) {
+            return Ok(note);
+        }
+        self.create(date, &format!("# {date}\n\n"), Some(JOURNAL))
+    }
+
     // ---- Aufgaben ----
 
     /// Offene Aufgaben aller aktiven Notizen, zuletzt geänderte Notiz zuerst. Wird aus dem
@@ -1551,6 +1566,25 @@ pub(crate) mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "# Inbox\nvon Hand\n\n### t\n\nx\n"
         );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn daily_note_is_created_once_in_the_journal_folder() {
+        let (mut n, dir) = vault();
+        let first = n.daily_note("2026-11-11").unwrap();
+        assert_eq!(first.id, "Journal/2026-11-11.md");
+        assert_eq!(read(&dir, &first.id), "# 2026-11-11\n\n");
+        n.save_content(&first.id, "# 2026-11-11\n\n- [ ] Anruf")
+            .unwrap();
+        let again = n.daily_note("2026-11-11").unwrap();
+        assert_eq!(again.id, first.id);
+        assert_eq!(read(&dir, &first.id), "# 2026-11-11\n\n- [ ] Anruf");
+        assert_eq!(
+            n.daily_note("2026-11-12").unwrap().id,
+            "Journal/2026-11-12.md"
+        );
+        assert!(n.folders().unwrap().iter().any(|f| f.id == "Journal"));
         std::fs::remove_dir_all(dir).ok();
     }
 

@@ -48,6 +48,7 @@ actions!(
         CloseTab,
         Quit,
         NewDocument,
+        OpenDailyNote,
         ExportTypst,
         ExportPdf,
         ExportHtml,
@@ -2679,6 +2680,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_help))
             .on_action(cx.listener(Self::toggle_preview))
             .on_action(cx.listener(Self::new_note))
+            .on_action(cx.listener(Self::open_daily_note))
             .on_action(cx.listener(Self::selection_to_note))
             .on_action(cx.listener(Self::reveal_vault))
             .on_action(cx.listener(Self::note_to_workspace))
@@ -3087,6 +3089,7 @@ fn main() -> std::process::ExitCode {
             KeyBinding::new("secondary-shift-/", ToggleHelp, None),
             KeyBinding::new("secondary-shift-v", TogglePreview, None),
             KeyBinding::new("secondary-shift-n", NewNote, None),
+            KeyBinding::new("secondary-shift-j", OpenDailyNote, None),
             KeyBinding::new("secondary-shift-f", ShowNotes, None),
             KeyBinding::new("secondary-shift-e", ExportPdf, None),
             KeyBinding::new("secondary-shift-t", ExportTypst, None),

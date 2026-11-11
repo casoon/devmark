@@ -25,8 +25,8 @@ use gpui_kit::*;
 
 use crate::assist::NoteIndex;
 use crate::{
-    BackupNow, ChooseVault, NewDocument, NewNote, NoteToWorkspace, RevealVault, SelectionToNote,
-    ShowFiles, ShowHistory, ShowNotes, ToggleTrash, Workspace,
+    BackupNow, ChooseVault, NewDocument, NewNote, NoteToWorkspace, OpenDailyNote, RevealVault,
+    SelectionToNote, ShowFiles, ShowHistory, ShowNotes, ToggleTrash, Workspace,
 };
 
 /// Wie lange nach der letzten Eingabe gespeichert wird.
@@ -474,6 +474,30 @@ impl Workspace {
 
     pub(crate) fn new_note(&mut self, _: &NewNote, window: &mut Window, cx: &mut Context<Self>) {
         self.create_note_with("", window, cx);
+    }
+
+    /// Tagesnotiz `Journal/<heute>.md` öffnen, bei Bedarf anlegen.
+    pub(crate) fn open_daily_note(
+        &mut self,
+        _: &OpenDailyNote,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(state) = self.notes.as_mut() else {
+            return;
+        };
+        match state.notes.daily_note(&crate::today()) {
+            Ok(document) => {
+                state.show_trash = false;
+                self.sidebar = SidebarMode::Notes;
+                self.refresh_notes(cx);
+                self.open_note(document.id, window, cx);
+            }
+            Err(err) => window.push_notification(
+                Notification::error(format!("Tagesnotiz konnte nicht angelegt werden: {err}")),
+                cx,
+            ),
+        }
     }
 
     fn create_note_with(&mut self, content: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1191,6 +1215,14 @@ impl Workspace {
                         .child("Suchen")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.show_notes(&ShowNotes, window, cx)
+                        })),
+                )
+                .child(
+                    nav_row("nav-today", 0, false, cx)
+                        .child(nav_icon(AssetIcon::Calendar, cx))
+                        .child("Heute")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_daily_note(&OpenDailyNote, window, cx)
                         })),
                 )
                 .child(

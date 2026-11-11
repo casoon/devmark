@@ -7,6 +7,7 @@ All notable changes to DevMark are listed here. DevMark follows
 
 ### Added
 
+- **Notes:** “Heute“ (`Cmd/Ctrl-Shift-J`) opens today's note `Journal/<date>.md` and creates it if needed. See [Write](https://casoon.github.io/devmark/docs/guides/notes/).
 - **CLI:** `devmark --note "Text"` appends a dated entry to `Inbox.md` in the notes folder without opening a window. See [Capture from outside](https://casoon.github.io/devmark/docs/guides/notes/#capture-from-outside).
 - **Notes:** an “Aufgaben“ view lists the open tasks of all notes, grouped by note; ticking one off writes `- [x]` into the file. See [Find](https://casoon.github.io/devmark/docs/guides/notes/#find).
 - **Notes:** search hits show the folder path and can be sorted by last modified (default) or by relevance; the choice is remembered. See [Find](https://casoon.github.io/devmark/docs/guides/notes/#find).

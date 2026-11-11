@@ -11,6 +11,7 @@ Every note is a plain Markdown file in the notes folder, by default `~/Documents
 - **Folders** in the notes folder are real subfolders and form the hierarchy.
 - **The file name** is the first line of the note and follows it when it changes.
 - **Write right away:** `Cmd/Ctrl-Shift-N`, no file name, no saving – autosave takes care of it.
+- **Daily note:** “Heute“ in the navigation or `Cmd/Ctrl-Shift-J` opens `Journal/<date>.md` for today and creates it with the date as heading if it does not exist yet. The date is UTC.
 
 Since they are just files, any other program can open, version or [sync](../sync/) them.
 
