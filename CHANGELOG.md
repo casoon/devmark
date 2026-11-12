@@ -5,6 +5,8 @@ All notable changes to DevMark are listed here. DevMark follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-13
+
 ### Added
 
 - **Notes:** an early block view (`Cmd/Ctrl-Shift-B`) shows a note as formatted blocks and edits the Markdown of the clicked one; unchanged notes stay byte-identical. See [Block view](https://casoon.github.io/devmark/docs/guides/notes/#block-view).
