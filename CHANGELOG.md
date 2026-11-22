@@ -7,7 +7,7 @@ All notable changes to DevMark are listed here. DevMark follows
 
 ### Changed
 
-- **Pages:** the project site uses the current shared theme (0.16.3).
+- **Pages:** the project site uses the current shared theme (0.16.4).
 
 
 ## [0.4.0] - 2026-11-13
